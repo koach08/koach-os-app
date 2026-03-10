@@ -1,0 +1,45 @@
+# Environment files
+.env
+.env.local
+.env*.local
+.env.production
+.env.development
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# IDE / Editor
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs (personal data)
+data/
+memory/
+
+# Junk files
+=*

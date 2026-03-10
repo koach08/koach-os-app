@@ -1,0 +1,52 @@
+"""
+Koach OS v2 — FastAPI Backend
+================================
+Thin wrapper around existing Python core modules.
+Shares data_manager, router, prompts, bias_detector, learning_engine with Streamlit app.
+"""
+
+import sys
+from pathlib import Path
+
+# Add project root to path so we can import the shared modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from data_manager import init_all_data_files
+from routers import chat, logs, review, memory, settings, analyze, voice, suggestions, calendar
+
+# Initialize data files on startup
+init_all_data_files()
+
+app = FastAPI(
+    title="Koach OS v2 API",
+    description="Structured Reflective AI Partner — Backend API",
+    version="2.0.0",
+)
+
+# CORS for Next.js dev server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register routers
+app.include_router(chat.router, prefix="/api")
+app.include_router(logs.router, prefix="/api")
+app.include_router(review.router, prefix="/api")
+app.include_router(memory.router, prefix="/api")
+app.include_router(settings.router, prefix="/api")
+app.include_router(analyze.router, prefix="/api")
+app.include_router(voice.router, prefix="/api")
+app.include_router(suggestions.router, prefix="/api")
+app.include_router(calendar.router, prefix="/api")
+
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok", "version": "2.0.0"}

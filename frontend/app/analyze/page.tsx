@@ -468,7 +468,7 @@ export default function AnalyzePage() {
               >
                 <div className="flex items-center gap-2 mb-3">
                   <h3 className="text-sm font-medium">Analysis Result / 分析結果</h3>
-                  {singleResult.platform && (
+                  {Boolean(singleResult.platform) && (
                     <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "var(--color-accent)", color: "white" }}>
                       {String(singleResult.platform)}
                     </span>
@@ -478,13 +478,13 @@ export default function AnalyzePage() {
                       Google Drive
                     </span>
                   )}
-                  {singleResult.extracted_length && (
+                  {Boolean(singleResult.extracted_length) && (
                     <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                       {String(singleResult.extracted_length)} chars
                     </span>
                   )}
                 </div>
-                {singleResult.analysis && typeof singleResult.analysis === "object" && (
+                {Boolean(singleResult.analysis) && typeof singleResult.analysis === "object" && (
                   <div className="space-y-3">
                     {Object.entries(singleResult.analysis as Record<string, string>).map(([key, value]) => (
                       <div key={key}>

@@ -84,6 +84,7 @@ DEFAULT_MODELS = {
     "gemini": "gemini-2.5-pro",
     "venice": "venice-uncensored",
     "perplexity": "sonar-pro",
+    "groq": "llama-3.3-70b-versatile",
 }
 
 # Available models for settings UI
@@ -122,6 +123,14 @@ AVAILABLE_MODELS = {
         ("sonar", "Sonar (Web検索・軽量)"),
         ("sonar-reasoning-pro", "Sonar Reasoning Pro (推論+検索)"),
         ("sonar-reasoning", "Sonar Reasoning (推論+検索・軽量)"),
+    ],
+    "groq": [
+        ("llama-3.3-70b-versatile", "Llama 3.3 70B (汎用・高速)"),
+        ("llama-3.1-8b-instant", "Llama 3.1 8B (爆速・軽量)"),
+        ("llama-4-scout-17b-16e-instruct", "Llama 4 Scout (新・高速)"),
+        ("deepseek-r1-distill-llama-70b", "DeepSeek R1 Distill (推論)"),
+        ("qwen/qwen3-32b", "Qwen3 32B"),
+        ("openai/gpt-oss-120b", "GPT-OSS 120B"),
     ],
 }
 
@@ -180,6 +189,7 @@ def call_ai(messages: list[dict], system: str, engine: str, model: str, max_toke
         "gemini": _call_gemini,
         "venice": _call_venice,
         "perplexity": _call_perplexity,
+        "groq": _call_groq,
     }
     fn = dispatch.get(engine, _call_gpt)
     try:
@@ -351,6 +361,32 @@ def _call_perplexity(messages: list[dict], system: str, model: str, max_tokens: 
         raise ValueError("PERPLEXITY_API_KEY not configured")
 
     client = openai.OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+    oai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=oai_messages,
+    )
+
+    try:
+        if resp.usage:
+            log_api_cost(model, resp.usage.prompt_tokens, resp.usage.completion_tokens, "chat")
+    except Exception:
+        pass
+
+    return resp.choices[0].message.content
+
+
+def _call_groq(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call Groq via OpenAI-compatible API (LPU-accelerated inference)."""
+    import openai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not configured")
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     oai_messages = [{"role": "system", "content": system}] + messages
     resp = client.chat.completions.create(
         model=model,

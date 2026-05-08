@@ -1,0 +1,7 @@
+frontend/
+schedule-manager/
+.streamlit/
+pages/
+scripts/
+*.md
+app.py

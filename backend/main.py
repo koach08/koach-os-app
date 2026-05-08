@@ -5,6 +5,7 @@ Thin wrapper around existing Python core modules.
 Shares data_manager, router, prompts, bias_detector, learning_engine with Streamlit app.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,10 +27,18 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# CORS for Next.js dev server
+# CORS — env override for production (comma-separated origins)
+_default_origins = ["http://localhost:3000", "http://localhost:3001"]
+_env_origins = os.environ.get("CORS_ORIGINS", "")
+_allow_origins = (
+    [o.strip() for o in _env_origins.split(",") if o.strip()]
+    if _env_origins
+    else _default_origins
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

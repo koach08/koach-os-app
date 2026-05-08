@@ -8,3 +8,10 @@ audio-recorder-streamlit>=0.0.8
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
+
+# FastAPI backend (also in backend/requirements.txt — duplicated here for unified Railway build)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+PyPDF2>=3.0.0
+requests>=2.31.0

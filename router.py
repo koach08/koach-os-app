@@ -80,6 +80,8 @@ TASK_TYPE_KEYWORDS = {
 DEFAULT_MODELS = {
     "claude": "claude-opus-4-6",
     "gpt": "gpt-5.4",
+    "grok": "grok-4",
+    "gemini": "gemini-2.5-pro",
 }
 
 # Available models for settings UI
@@ -96,6 +98,16 @@ AVAILABLE_MODELS = {
         ("gpt-4.1", "GPT-4.1 (非推論・安定 $2.00/$8)"),
         ("gpt-4.1-mini", "GPT-4.1 Mini (低コスト $0.40/$1.60)"),
         ("gpt-4.1-nano", "GPT-4.1 Nano (超低コスト $0.10/$0.40)"),
+    ],
+    "grok": [
+        ("grok-4", "Grok 4 (推論・最高性能)"),
+        ("grok-4-mini", "Grok 4 Mini (軽量)"),
+        ("grok-3", "Grok 3 (前世代)"),
+    ],
+    "gemini": [
+        ("gemini-2.5-pro", "Gemini 2.5 Pro (推論・長文 2M context)"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash (高速)"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite (低コスト)"),
     ],
 }
 
@@ -146,23 +158,25 @@ def route(task_type: str, override: str | None = None, custom_models: dict | Non
 
 
 def call_ai(messages: list[dict], system: str, engine: str, model: str, max_tokens: int = 2048) -> str:
-    """Unified API call for both Anthropic and OpenAI."""
+    """Unified API call across Claude, GPT, Grok, Gemini."""
+    dispatch = {
+        "claude": _call_claude,
+        "gpt": _call_gpt,
+        "grok": _call_grok,
+        "gemini": _call_gemini,
+    }
+    fn = dispatch.get(engine, _call_gpt)
     try:
-        if engine == "claude":
-            return _call_claude(messages, system, model, max_tokens)
-        else:
-            return _call_gpt(messages, system, model, max_tokens)
+        return fn(messages, system, model, max_tokens)
     except Exception as e:
-        # Fallback: try the other engine
+        # Fallback: prefer Claude if not the failing engine, else GPT
         try:
-            if engine == "claude":
-                fallback_model = DEFAULT_MODELS["gpt"]
-                return _call_gpt(messages, system, fallback_model, max_tokens)
+            if engine != "claude":
+                return _call_claude(messages, system, DEFAULT_MODELS["claude"], max_tokens)
             else:
-                fallback_model = DEFAULT_MODELS["claude"]
-                return _call_claude(messages, system, fallback_model, max_tokens)
+                return _call_gpt(messages, system, DEFAULT_MODELS["gpt"], max_tokens)
         except Exception as e2:
-            return f"❌ Both APIs failed.\nPrimary: {e}\nFallback: {e2}"
+            return f"❌ Both APIs failed.\nPrimary ({engine}): {e}\nFallback: {e2}"
 
 
 def _call_claude(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
@@ -214,6 +228,75 @@ def _call_gpt(messages: list[dict], system: str, model: str, max_tokens: int = 2
         pass
 
     return resp.choices[0].message.content
+
+
+def _call_grok(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call xAI Grok via OpenAI-compatible API."""
+    import openai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("XAI_API_KEY")
+    if not api_key:
+        raise ValueError("XAI_API_KEY not configured")
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+    oai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=oai_messages,
+    )
+
+    try:
+        if resp.usage:
+            log_api_cost(model, resp.usage.prompt_tokens, resp.usage.completion_tokens, "chat")
+    except Exception:
+        pass
+
+    return resp.choices[0].message.content
+
+
+def _call_gemini(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call Google Gemini API."""
+    import google.generativeai as genai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not configured")
+
+    genai.configure(api_key=api_key)
+    model_obj = genai.GenerativeModel(model_name=model, system_instruction=system)
+
+    # Convert OpenAI-style messages to Gemini format
+    if not messages:
+        raise ValueError("messages must not be empty")
+
+    history = []
+    for m in messages[:-1]:
+        role = "user" if m.get("role") == "user" else "model"
+        history.append({"role": role, "parts": [m.get("content", "")]})
+
+    chat = model_obj.start_chat(history=history)
+    last_msg = messages[-1].get("content", "")
+    resp = chat.send_message(
+        last_msg,
+        generation_config={"max_output_tokens": max_tokens},
+    )
+
+    try:
+        usage = getattr(resp, "usage_metadata", None)
+        if usage:
+            log_api_cost(
+                model,
+                getattr(usage, "prompt_token_count", 0),
+                getattr(usage, "candidates_token_count", 0),
+                "chat",
+            )
+    except Exception:
+        pass
+
+    return resp.text
 
 
 def transcribe_audio(audio_bytes: bytes, language: str = "") -> str:

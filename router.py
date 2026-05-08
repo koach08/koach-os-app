@@ -31,6 +31,12 @@ ROUTING_TABLE = {
     # Learning tasks → Claude
     "style_analysis": "claude",
     "pattern_extraction": "claude",
+
+    # New routes (multi-engine)
+    "realtime_query": "groq",        # 爆速応答が欲しい単発質問
+    "web_search": "perplexity",       # 最新情報・Web検索
+    "long_context": "gemini",         # 長文・PDF・大量資料
+    "uncensored": "venice",           # 制約なし対話・brainstorm
 }
 
 # Task type detection keywords
@@ -73,6 +79,22 @@ TASK_TYPE_KEYWORDS = {
     "research_discussion": [
         "research", "paper", "study", "methodology", "hypothesis",
         "研究", "論文", "方法論", "仮説",
+    ],
+    "realtime_query": [
+        "fast", "instant", "right now", "asap",
+        "爆速", "即答", "今すぐ", "急ぎで",
+    ],
+    "web_search": [
+        "search the web", "latest news", "recent", "what's new",
+        "最新", "今", "ニュース", "調べて", "検索して", "現在",
+    ],
+    "long_context": [
+        "long document", "entire paper", "whole pdf", "this book",
+        "長文", "全文", "丸ごと", "一冊", "ドキュメント全体",
+    ],
+    "uncensored": [
+        "uncensored", "no filter", "honestly", "without restrictions",
+        "制約なし", "本音", "忖度なしで", "包み隠さず",
     ],
 }
 

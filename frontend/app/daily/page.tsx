@@ -29,7 +29,19 @@ type DailyBrief = {
   topics: string[];
   failures: Failure[];
   ai_brief: string;
+  engine_used: string;
+  model_used: string;
 };
+
+const ENGINES: { value: string; label: string; emoji: string; hint: string }[] = [
+  { value: "claude", label: "Claude", emoji: "🧠", hint: "思考・戦略" },
+  { value: "gpt", label: "GPT", emoji: "🤖", hint: "実行・コード" },
+  { value: "grok", label: "Grok", emoji: "🌀", hint: "推論・代替" },
+  { value: "gemini", label: "Gemini", emoji: "✨", hint: "長文・解析" },
+  { value: "venice", label: "Venice", emoji: "🎭", hint: "制約なし" },
+  { value: "perplexity", label: "Perplexity", emoji: "🔍", hint: "Web検索" },
+  { value: "groq", label: "Groq", emoji: "⚡", hint: "爆速" },
+];
 
 function formatTime(iso: string): string {
   if (!iso) return "";
@@ -61,23 +73,31 @@ export default function DailyPage() {
   const [data, setData] = useState<DailyBrief | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [engine, setEngine] = useState<string>("claude");
 
-  const load = () => {
+  const load = (engineOverride?: string) => {
+    const e = engineOverride ?? engine;
     setLoading(true);
     setError(null);
-    fetch("/api/daily-brief")
+    fetch(`/api/daily-brief?engine=${encodeURIComponent(e)}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<DailyBrief>;
       })
       .then(setData)
-      .catch((e: Error) => setError(e.message))
+      .catch((er: Error) => setError(er.message))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    load();
+    load("claude");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleEngineChange = (e: string) => {
+    setEngine(e);
+    load(e);
+  };
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -113,9 +133,9 @@ export default function DailyPage() {
           >
             {formatGreeting()}。
           </h1>
-          <div className="mt-6 flex items-center gap-3">
+          <div className="mt-6 flex items-center gap-3 flex-wrap">
             <button
-              onClick={load}
+              onClick={() => load()}
               disabled={loading}
               className="px-5 py-2.5 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
               style={{
@@ -131,9 +151,36 @@ export default function DailyPage() {
                 {new Date(data.generated_at).toLocaleTimeString("ja-JP", {
                   hour: "2-digit",
                   minute: "2-digit",
-                })} 更新
+                })} / {data.engine_used}
               </span>
             )}
+          </div>
+
+          {/* Engine selector pills */}
+          <div className="mt-5 flex flex-wrap gap-2">
+            {ENGINES.map((e) => {
+              const active = engine === e.value;
+              return (
+                <button
+                  key={e.value}
+                  onClick={() => handleEngineChange(e.value)}
+                  disabled={loading}
+                  title={e.hint}
+                  className="px-3.5 py-1.5 rounded-full text-xs transition-all disabled:opacity-50"
+                  style={{
+                    background: active ? "var(--color-text)" : "rgba(255,255,255,0.04)",
+                    color: active ? "var(--color-background)" : "var(--color-text-muted)",
+                    border: active
+                      ? "1px solid var(--color-text)"
+                      : "1px solid var(--color-border)",
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  <span className="mr-1">{e.emoji}</span>
+                  {e.label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

@@ -7,7 +7,7 @@ GET /api/daily-brief — 朝1画面で生活を回すためのDaily Brief
 """
 
 from datetime import timedelta
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from gcal import is_configured, get_events
 from data_manager import (
@@ -17,7 +17,7 @@ from data_manager import (
     FAILURES_FILE,
     now_jst,
 )
-from router import call_ai, DEFAULT_MODELS
+from router import call_ai, DEFAULT_MODELS, AVAILABLE_MODELS
 
 router = APIRouter()
 
@@ -91,7 +91,10 @@ def _recent_failures(limit: int = 2) -> list[dict]:
 
 
 @router.get("/daily-brief")
-def daily_brief():
+def daily_brief(
+    engine: str = Query("claude", description="claude/gpt/grok/gemini/venice/perplexity/groq"),
+    model: str | None = Query(None, description="override model id (optional)"),
+):
     """
     朝1画面で出すDaily Brief。
     schedule + decisions + topics + failures + AI問いかけ を構造化JSONで返す。
@@ -151,12 +154,17 @@ def daily_brief():
 - 200字以内。箇条書き4-5項目
 - 日本語、です/ます調、煽らない、抽象名詞「〜性」は使わない"""
 
+    # Resolve model: explicit > engine default > claude default
+    if engine not in DEFAULT_MODELS:
+        engine = "claude"
+    resolved_model = model or DEFAULT_MODELS.get(engine, DEFAULT_MODELS["claude"])
+
     try:
         ai_brief = call_ai(
             messages=[{"role": "user", "content": "今日のbriefingをお願いします。"}],
             system=prompt,
-            engine="claude",
-            model=DEFAULT_MODELS["claude"],
+            engine=engine,
+            model=resolved_model,
             max_tokens=600,
         )
     except Exception as e:
@@ -170,4 +178,6 @@ def daily_brief():
         "topics": topics,
         "failures": failures,
         "ai_brief": ai_brief,
+        "engine_used": engine,
+        "model_used": resolved_model,
     }

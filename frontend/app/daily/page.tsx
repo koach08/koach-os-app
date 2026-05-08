@@ -31,11 +31,6 @@ type DailyBrief = {
   ai_brief: string;
 };
 
-const card = {
-  background: "var(--color-surface)",
-  border: "1px solid var(--color-border)",
-};
-
 function formatTime(iso: string): string {
   if (!iso) return "";
   if (iso.length <= 10) return "終日";
@@ -52,6 +47,14 @@ function formatTimestamp(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 5) return "深夜";
+  if (h < 11) return "おはよう";
+  if (h < 17) return "こんにちは";
+  return "こんばんは";
 }
 
 export default function DailyPage() {
@@ -77,166 +80,314 @@ export default function DailyPage() {
   }, []);
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-4xl mx-auto space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Daily Brief</h1>
-            {data && (
-              <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                {new Date(data.generated_at).toLocaleString("ja-JP", {
-                  year: "numeric",
+    <div className="flex-1 overflow-y-auto">
+      {/* Hero header — full bleed gradient */}
+      <div
+        className="px-8 pt-12 pb-10 relative overflow-hidden"
+        style={{
+          background:
+            "radial-gradient(ellipse at top left, rgba(59, 130, 246, 0.18), transparent 60%), radial-gradient(ellipse at top right, rgba(234, 179, 8, 0.10), transparent 50%)",
+        }}
+      >
+        <div className="max-w-5xl mx-auto">
+          <p
+            className="text-xs uppercase tracking-widest mb-2"
+            style={{ color: "var(--color-text-muted)", letterSpacing: "0.2em" }}
+          >
+            {data
+              ? new Date(data.generated_at).toLocaleDateString("ja-JP", {
+                  weekday: "long",
                   month: "long",
                   day: "numeric",
-                  weekday: "long",
+                })
+              : "Loading"}
+          </p>
+          <h1
+            className="text-5xl font-bold tracking-tight leading-tight"
+            style={{
+              background:
+                "linear-gradient(135deg, #fafafa 0%, #a1a1aa 60%, #71717a 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+            }}
+          >
+            {formatGreeting()}。
+          </h1>
+          <div className="mt-6 flex items-center gap-3">
+            <button
+              onClick={load}
+              disabled={loading}
+              className="px-5 py-2.5 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+              style={{
+                background: "var(--color-accent)",
+                color: "white",
+                boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
+              }}
+            >
+              {loading ? "生成中..." : "Brief を更新"}
+            </button>
+            {data && (
+              <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                {new Date(data.generated_at).toLocaleTimeString("ja-JP", {
                   hour: "2-digit",
                   minute: "2-digit",
-                })}
-              </p>
+                })} 更新
+              </span>
             )}
           </div>
-          <button
-            onClick={load}
-            disabled={loading}
-            className="px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-            style={{ background: "var(--color-accent)", color: "white" }}
-          >
-            {loading ? "生成中..." : "更新"}
-          </button>
         </div>
+      </div>
 
-        {error && (
-          <div className="p-4 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-red)" }}>
-            <p className="text-sm" style={{ color: "var(--color-red)" }}>
+      <div className="px-8 pb-16">
+        <div className="max-w-5xl mx-auto space-y-6">
+          {error && (
+            <div
+              className="p-4 rounded-2xl text-sm"
+              style={{
+                background: "rgba(239, 68, 68, 0.08)",
+                border: "1px solid var(--color-red)",
+                color: "var(--color-red)",
+              }}
+            >
               読み込み失敗: {error}
-            </p>
-          </div>
-        )}
+            </div>
+          )}
 
-        {loading && !data && (
-          <div className="p-8 rounded-xl text-center" style={card}>
-            <p style={{ color: "var(--color-text-muted)" }}>Brief を生成しています...</p>
-          </div>
-        )}
+          {loading && !data && (
+            <div className="space-y-4 animate-pulse">
+              <div className="h-32 rounded-2xl" style={{ background: "var(--color-surface)" }} />
+              <div className="h-24 rounded-2xl" style={{ background: "var(--color-surface)" }} />
+              <div className="h-24 rounded-2xl" style={{ background: "var(--color-surface)" }} />
+            </div>
+          )}
 
-        {data && (
-          <>
-            {/* AI Brief — 最上段 */}
-            <div className="p-5 rounded-xl" style={{ ...card, borderColor: "var(--color-accent)" }}>
-              <h2 className="font-semibold mb-3 flex items-center gap-2">
-                <span>Koach から</span>
-                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "var(--color-accent)", color: "white" }}>
-                  L3
-                </span>
-              </h2>
+          {data && (
+            <>
+              {/* AI Brief — premium card */}
               <div
-                className="text-sm whitespace-pre-wrap leading-relaxed"
-                style={{ color: "var(--color-text)" }}
+                className="rounded-3xl p-7 relative overflow-hidden"
+                style={{
+                  background:
+                    "linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(168, 85, 247, 0.06) 100%)",
+                  border: "1px solid rgba(59, 130, 246, 0.25)",
+                }}
               >
-                {data.ai_brief}
-              </div>
-            </div>
-
-            {/* Schedule */}
-            <div className="p-5 rounded-xl" style={card}>
-              <h2 className="font-semibold mb-3">今日の予定</h2>
-              {data.gcal_status === "not_configured" ? (
-                <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  Google Calendar 未連携 — Settings から接続してください
-                </p>
-              ) : data.schedule.length === 0 ? (
-                <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>予定なし</p>
-              ) : (
-                <ul className="space-y-2">
-                  {data.schedule.map((ev, i) => (
-                    <li key={i} className="flex gap-3 text-sm">
+                <div
+                  className="absolute top-0 right-0 w-64 h-64 rounded-full opacity-20 blur-3xl"
+                  style={{ background: "var(--color-accent)" }}
+                />
+                <div className="relative">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
                       <span
-                        className="font-mono text-xs pt-0.5 shrink-0"
-                        style={{ color: "var(--color-text-muted)", minWidth: "3rem" }}
-                      >
-                        {formatTime(ev.start)}
+                        className="w-2 h-2 rounded-full animate-pulse"
+                        style={{ background: "var(--color-accent)" }}
+                      />
+                      <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--color-accent)" }}>
+                        Koach から
                       </span>
-                      <div className="flex-1">
-                        <span>{ev.title}</span>
-                        {ev.location && (
-                          <span className="ml-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                            @ {ev.location}
-                          </span>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                    </div>
+                    <span
+                      className="text-[10px] font-mono px-2 py-0.5 rounded-full"
+                      style={{ background: "rgba(245, 158, 11, 0.12)", color: "#f59e0b" }}
+                    >
+                      L3 介入
+                    </span>
+                  </div>
+                  <div
+                    className="text-[15px] whitespace-pre-wrap leading-[1.85]"
+                    style={{ color: "var(--color-text)" }}
+                  >
+                    {data.ai_brief}
+                  </div>
+                </div>
+              </div>
 
-            {/* Recent Decisions */}
-            <div className="p-5 rounded-xl" style={card}>
-              <h2 className="font-semibold mb-3">直近の決定</h2>
-              {data.decisions.length === 0 ? (
-                <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                  直近3日に登録された決定はありません
-                </p>
-              ) : (
-                <ul className="space-y-3">
-                  {data.decisions.map((d, i) => (
-                    <li key={i} className="text-sm border-l-2 pl-3" style={{ borderColor: "var(--color-border-light)" }}>
-                      <div className="font-medium">{d.title}</div>
-                      {d.reasoning && (
-                        <div className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                          {d.reasoning}
+              {/* 2-col layout for schedule + decisions */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <SectionCard
+                  emoji="🗓"
+                  title="今日の予定"
+                  count={data.schedule.length}
+                  empty={
+                    data.gcal_status === "not_configured"
+                      ? "Google Calendar 未連携"
+                      : "予定なし"
+                  }
+                  isEmpty={data.schedule.length === 0}
+                >
+                  <ul className="space-y-3">
+                    {data.schedule.map((ev, i) => (
+                      <li key={i} className="flex gap-3">
+                        <div
+                          className="font-mono text-xs pt-1 shrink-0 px-2.5 py-1 rounded-md"
+                          style={{
+                            background: "var(--color-surface-hover)",
+                            color: "var(--color-text-muted)",
+                            minWidth: "3.5rem",
+                            textAlign: "center",
+                          }}
+                        >
+                          {formatTime(ev.start)}
                         </div>
-                      )}
-                      <div className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                        {formatTimestamp(d.timestamp)}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {/* Topics + Failures (2 cols) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-5 rounded-xl" style={card}>
-                <h2 className="font-semibold mb-3">直近の話題</h2>
-                {data.topics.length === 0 ? (
-                  <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>会話履歴なし</p>
-                ) : (
-                  <ul className="space-y-2 text-sm">
-                    {data.topics.map((t, i) => (
-                      <li key={i} style={{ color: "var(--color-text-muted)" }}>
-                        — {t}
+                        <div className="flex-1 pt-0.5">
+                          <div className="text-sm font-medium">{ev.title}</div>
+                          {ev.location && (
+                            <div
+                              className="text-xs mt-0.5"
+                              style={{ color: "var(--color-text-muted)" }}
+                            >
+                              📍 {ev.location}
+                            </div>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>
-                )}
+                </SectionCard>
+
+                <SectionCard
+                  emoji="🧭"
+                  title="直近の決定"
+                  count={data.decisions.length}
+                  empty="直近3日に決定なし"
+                  isEmpty={data.decisions.length === 0}
+                >
+                  <ul className="space-y-3">
+                    {data.decisions.map((d, i) => (
+                      <li
+                        key={i}
+                        className="border-l-2 pl-3 py-1"
+                        style={{ borderColor: "var(--color-accent)" }}
+                      >
+                        <div className="text-sm font-medium">{d.title}</div>
+                        {d.reasoning && (
+                          <div
+                            className="text-xs mt-1 line-clamp-2"
+                            style={{ color: "var(--color-text-muted)" }}
+                          >
+                            {d.reasoning}
+                          </div>
+                        )}
+                        <div
+                          className="text-[10px] mt-1.5 font-mono"
+                          style={{ color: "var(--color-text-muted)" }}
+                        >
+                          {formatTimestamp(d.timestamp)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </SectionCard>
               </div>
 
-              <div className="p-5 rounded-xl" style={card}>
-                <h2 className="font-semibold mb-3">最近の失敗から</h2>
-                {data.failures.length === 0 ? (
-                  <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>記録された失敗なし</p>
-                ) : (
-                  <ul className="space-y-3 text-sm">
+              {/* Topics + Failures */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <SectionCard
+                  emoji="💭"
+                  title="直近の話題"
+                  count={data.topics.length}
+                  empty="会話履歴なし"
+                  isEmpty={data.topics.length === 0}
+                >
+                  <ul className="space-y-2.5">
+                    {data.topics.map((t, i) => (
+                      <li
+                        key={i}
+                        className="text-sm flex gap-2"
+                        style={{ color: "var(--color-text-muted)" }}
+                      >
+                        <span className="shrink-0 mt-1.5">
+                          <span
+                            className="block w-1 h-1 rounded-full"
+                            style={{ background: "var(--color-text-muted)" }}
+                          />
+                        </span>
+                        <span className="leading-relaxed">{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </SectionCard>
+
+                <SectionCard
+                  emoji="🪨"
+                  title="最近の失敗から"
+                  count={data.failures.length}
+                  empty="記録された失敗なし"
+                  isEmpty={data.failures.length === 0}
+                >
+                  <ul className="space-y-3.5">
                     {data.failures.map((f, i) => (
                       <li key={i}>
-                        <div className="font-medium">{f.what}</div>
+                        <div className="text-sm font-medium">{f.what}</div>
                         {f.lesson && (
-                          <div className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                            学び: {f.lesson}
+                          <div
+                            className="text-xs mt-1.5 italic"
+                            style={{ color: "var(--color-text-muted)" }}
+                          >
+                            → {f.lesson}
                           </div>
                         )}
                       </li>
                     ))}
                   </ul>
-                )}
+                </SectionCard>
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function SectionCard({
+  emoji,
+  title,
+  count,
+  empty,
+  isEmpty,
+  children,
+}: {
+  emoji: string;
+  title: string;
+  count: number;
+  empty: string;
+  isEmpty: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      className="rounded-2xl p-6 transition-all hover:border-[var(--color-border-light)]"
+      style={{
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
+      }}
+    >
+      <header className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold flex items-center gap-2">
+          <span className="text-lg">{emoji}</span>
+          <span>{title}</span>
+        </h2>
+        {!isEmpty && (
+          <span
+            className="text-xs font-mono px-2 py-0.5 rounded-full"
+            style={{
+              background: "var(--color-surface-hover)",
+              color: "var(--color-text-muted)",
+            }}
+          >
+            {count}
+          </span>
+        )}
+      </header>
+      {isEmpty ? (
+        <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+          {empty}
+        </p>
+      ) : (
+        children
+      )}
+    </section>
   );
 }

@@ -9,8 +9,9 @@ import os
 import sys
 from pathlib import Path
 
-# Add project root to path so we can import the shared modules
+# Add project root + backend dir to path so we can import shared modules and routers
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

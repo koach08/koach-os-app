@@ -82,6 +82,8 @@ DEFAULT_MODELS = {
     "gpt": "gpt-5.4",
     "grok": "grok-4",
     "gemini": "gemini-2.5-pro",
+    "venice": "venice-uncensored",
+    "perplexity": "sonar-pro",
 }
 
 # Available models for settings UI
@@ -108,6 +110,18 @@ AVAILABLE_MODELS = {
         ("gemini-2.5-pro", "Gemini 2.5 Pro (推論・長文 2M context)"),
         ("gemini-2.5-flash", "Gemini 2.5 Flash (高速)"),
         ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite (低コスト)"),
+    ],
+    "venice": [
+        ("venice-uncensored", "Venice Uncensored (制約なし)"),
+        ("llama-3.3-70b", "Llama 3.3 70B"),
+        ("qwen3-235b", "Qwen3 235B"),
+        ("deepseek-r1-llama-70b", "DeepSeek R1 (推論)"),
+    ],
+    "perplexity": [
+        ("sonar-pro", "Sonar Pro (Web検索・高性能)"),
+        ("sonar", "Sonar (Web検索・軽量)"),
+        ("sonar-reasoning-pro", "Sonar Reasoning Pro (推論+検索)"),
+        ("sonar-reasoning", "Sonar Reasoning (推論+検索・軽量)"),
     ],
 }
 
@@ -164,6 +178,8 @@ def call_ai(messages: list[dict], system: str, engine: str, model: str, max_toke
         "gpt": _call_gpt,
         "grok": _call_grok,
         "gemini": _call_gemini,
+        "venice": _call_venice,
+        "perplexity": _call_perplexity,
     }
     fn = dispatch.get(engine, _call_gpt)
     try:
@@ -297,6 +313,58 @@ def _call_gemini(messages: list[dict], system: str, model: str, max_tokens: int 
         pass
 
     return resp.text
+
+
+def _call_venice(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call Venice AI via OpenAI-compatible API."""
+    import openai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("VENICE_API_KEY")
+    if not api_key:
+        raise ValueError("VENICE_API_KEY not configured")
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.venice.ai/api/v1")
+    oai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=oai_messages,
+    )
+
+    try:
+        if resp.usage:
+            log_api_cost(model, resp.usage.prompt_tokens, resp.usage.completion_tokens, "chat")
+    except Exception:
+        pass
+
+    return resp.choices[0].message.content
+
+
+def _call_perplexity(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call Perplexity Sonar via OpenAI-compatible API."""
+    import openai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("PERPLEXITY_API_KEY")
+    if not api_key:
+        raise ValueError("PERPLEXITY_API_KEY not configured")
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+    oai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=oai_messages,
+    )
+
+    try:
+        if resp.usage:
+            log_api_cost(model, resp.usage.prompt_tokens, resp.usage.completion_tokens, "chat")
+    except Exception:
+        pass
+
+    return resp.choices[0].message.content
 
 
 def transcribe_audio(audio_bytes: bytes, language: str = "") -> str:

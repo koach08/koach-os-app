@@ -15,6 +15,7 @@ from data_manager import (
     LOGS_FILE,
     DECISIONS_FILE,
     FAILURES_FILE,
+    TASKS_FILE,
     now_jst,
 )
 from router import call_ai, DEFAULT_MODELS, AVAILABLE_MODELS
@@ -76,6 +77,43 @@ def _recent_topics(limit: int = 5) -> list[str]:
     return out
 
 
+def _open_tasks() -> list[dict]:
+    """Tasks not done, sorted by due date / priority."""
+    state: dict[str, dict] = {}
+    for e in read_jsonl(TASKS_FILE):
+        tid = e.get("id")
+        if not tid:
+            continue
+        if e.get("_deleted"):
+            state.pop(tid, None)
+            continue
+        state[tid] = e
+
+    open_tasks = [t for t in state.values() if t.get("status") != "done"]
+    today = now_jst().strftime("%Y-%m-%d")
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    open_tasks.sort(
+        key=lambda t: (
+            (t.get("due_date") or "9999-12-31") < today,  # overdue first... wait false sorts first
+            t.get("due_date") or "9999-12-31",
+            priority_rank.get(t.get("priority", "medium"), 1),
+        )
+    )
+    # Trim fields
+    return [
+        {
+            "id": t["id"],
+            "title": t.get("title", ""),
+            "status": t.get("status", "todo"),
+            "priority": t.get("priority", "medium"),
+            "due_date": t.get("due_date"),
+            "due_time": t.get("due_time"),
+            "category": t.get("category", "personal"),
+        }
+        for t in open_tasks[:10]
+    ]
+
+
 def _recent_failures(limit: int = 2) -> list[dict]:
     """最近の失敗ログ（学びの再確認用）。"""
     failures = read_jsonl(FAILURES_FILE)
@@ -119,6 +157,9 @@ def daily_brief(
     # 4. 失敗からの学び
     failures = _recent_failures(limit=2)
 
+    # 5. オープンタスク
+    tasks = _open_tasks()
+
     # 5. AI問いかけ（L3介入相当：今日3つに絞れ）
     schedule_text = (
         "\n".join(
@@ -132,6 +173,15 @@ def daily_brief(
         "\n".join(f"- {d['title']}" for d in decisions) if decisions else "(直近の決定なし)"
     )
     topics_text = "\n".join(f"- {t}" for t in topics) if topics else "(直近の会話なし)"
+    tasks_text = (
+        "\n".join(
+            f"- [{t['priority']}] {t['title']}"
+            + (f" (期限 {t['due_date']})" if t.get("due_date") else "")
+            for t in tasks
+        )
+        if tasks
+        else "(オープンなタスクなし)"
+    )
 
     prompt = f"""あなたは Koach OS。志柿のための reflective AI partner。
 今は {now.strftime('%Y-%m-%d %H:%M (%A)')} 。
@@ -145,6 +195,9 @@ def daily_brief(
 
 ## 直近の話題
 {topics_text}
+
+## オープンタスク
+{tasks_text}
 
 ## 出力ルール
 - 「今日やる3つ」を提案する。多すぎ判定したら「絞れ」と言う
@@ -177,6 +230,7 @@ def daily_brief(
         "decisions": decisions,
         "topics": topics,
         "failures": failures,
+        "tasks": tasks,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

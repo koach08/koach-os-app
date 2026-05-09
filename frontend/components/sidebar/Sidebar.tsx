@@ -14,6 +14,7 @@ interface Props {
 
 const NAV_ITEMS = [
   { href: "/daily", label: "Daily", icon: "🌅" },
+  { href: "/tasks", label: "Tasks", icon: "✅" },
   { href: "/gmail-sync", label: "Inbox→Cal", icon: "📨" },
   { href: "/", label: "Chat", icon: "💬" },
   { href: "/analyze", label: "Style", icon: "✍️" },

@@ -20,12 +20,25 @@ router = APIRouter()
 
 @router.get("/settings")
 def get_settings():
-    """Get current settings."""
+    """Get current settings + API key status for all 7 engines."""
+    engine_keys = {
+        "claude": "ANTHROPIC_API_KEY",
+        "gpt": "OPENAI_API_KEY",
+        "grok": "XAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "venice": "VENICE_API_KEY",
+        "perplexity": "PERPLEXITY_API_KEY",
+        "groq": "GROQ_API_KEY",
+    }
+    has_keys = {engine: bool(get_secret(env_var)) for engine, env_var in engine_keys.items()}
+
     return {
         "models": DEFAULT_MODELS,
         "available_models": AVAILABLE_MODELS,
-        "has_anthropic_key": bool(get_secret("ANTHROPIC_API_KEY")),
-        "has_openai_key": bool(get_secret("OPENAI_API_KEY")),
+        "has_keys": has_keys,
+        # Backwards compatibility
+        "has_anthropic_key": has_keys["claude"],
+        "has_openai_key": has_keys["gpt"],
     }
 
 

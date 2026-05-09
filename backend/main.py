@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from data_manager import init_all_data_files
-from routers import chat, logs, review, memory, settings, analyze, voice, suggestions, calendar, daily_brief
+from routers import chat, logs, review, memory, settings, analyze, voice, suggestions, calendar, daily_brief, gmail_calendar
 
 # Initialize data files on startup
 init_all_data_files()
@@ -56,6 +56,7 @@ app.include_router(voice.router, prefix="/api")
 app.include_router(suggestions.router, prefix="/api")
 app.include_router(calendar.router, prefix="/api")
 app.include_router(daily_brief.router, prefix="/api")
+app.include_router(gmail_calendar.router, prefix="/api")
 
 
 @app.get("/api/health")

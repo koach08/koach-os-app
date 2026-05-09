@@ -80,10 +80,12 @@ export default function GmailSyncPage() {
     setProposals([]);
     setCreated({});
     try {
+      // Auto-scale email limit with timespan to ensure sufficient coverage
+      const limit = days <= 7 ? 20 : days <= 30 ? 50 : days <= 90 ? 100 : 200;
       const res = await fetch("/api/gmail/extract-events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days, limit: 20, engine: "gemini" }),
+        body: JSON.stringify({ days, limit, engine: "gemini" }),
       });
       if (!res.ok) {
         const detail = await res.text();
@@ -207,6 +209,11 @@ export default function GmailSyncPage() {
                     <option value={3}>3日</option>
                     <option value={7}>7日</option>
                     <option value={14}>14日</option>
+                    <option value={30}>30日 (1ヶ月)</option>
+                    <option value={60}>60日 (2ヶ月)</option>
+                    <option value={90}>90日 (3ヶ月)</option>
+                    <option value={180}>180日 (半年)</option>
+                    <option value={365}>365日 (1年)</option>
                   </select>
                   <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>
                     のメールを解析

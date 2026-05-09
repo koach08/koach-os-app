@@ -27,7 +27,7 @@ def gmail_status():
 
 
 @router.get("/gmail/recent")
-def gmail_recent(days: int = Query(3, ge=1, le=14), limit: int = Query(20, ge=1, le=50)):
+def gmail_recent(days: int = Query(3, ge=1, le=365), limit: int = Query(20, ge=1, le=200)):
     """Fetch recent emails."""
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
@@ -43,6 +43,16 @@ class ExtractRequest(BaseModel):
     limit: int = 20
     engine: str = "gemini"  # default: Gemini for long context
     model: str | None = None
+
+    def model_post_init(self, _ctx):
+        if self.days < 1:
+            self.days = 1
+        if self.days > 365:
+            self.days = 365
+        if self.limit < 1:
+            self.limit = 1
+        if self.limit > 200:
+            self.limit = 200
 
 
 class EventProposal(BaseModel):

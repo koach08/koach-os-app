@@ -6,11 +6,23 @@ import { InputBar, type AttachedFile } from "@/components/chat/InputBar";
 import { streamChat } from "@/lib/api";
 import type { ChatMessage, MessageMetadata } from "@/lib/types";
 
+const ENGINES: { value: string | null; label: string; emoji: string; hint: string }[] = [
+  { value: null, label: "Auto", emoji: "✨", hint: "内容に応じて自動選択" },
+  { value: "claude", label: "Claude", emoji: "🧠", hint: "思考・戦略" },
+  { value: "gpt", label: "GPT", emoji: "🤖", hint: "実行・コード" },
+  { value: "grok", label: "Grok", emoji: "🌀", hint: "推論・代替" },
+  { value: "gemini", label: "Gemini", emoji: "✨", hint: "長文・解析" },
+  { value: "venice", label: "Venice", emoji: "🎭", hint: "制約なし" },
+  { value: "perplexity", label: "Perplexity", emoji: "🔍", hint: "Web検索" },
+  { value: "groq", label: "Groq", emoji: "⚡", hint: "爆速" },
+];
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [streamingMeta, setStreamingMeta] = useState<MessageMetadata | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [engineOverride, setEngineOverride] = useState<string | null>(null);
 
   const sendMessage = useCallback(
     async (text: string, history: ChatMessage[], files?: AttachedFile[]) => {
@@ -38,6 +50,7 @@ export default function ChatPage() {
           message: fullMessage,
           domain: "personal",
           history: history.map((m) => ({ role: m.role, content: m.content })),
+          engine_override: engineOverride,
         },
         {
           onMetadata: (m) => {
@@ -79,7 +92,7 @@ export default function ChatPage() {
         }
       );
     },
-    []
+    [engineOverride]
   );
 
   const handleSend = useCallback(
@@ -138,6 +151,47 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Engine selector bar */}
+      <div
+        className="px-4 py-2.5 flex items-center gap-2 overflow-x-auto"
+        style={{
+          background: "var(--color-surface)",
+          borderBottom: "1px solid var(--color-border)",
+        }}
+      >
+        <span
+          className="text-[10px] uppercase tracking-wider shrink-0"
+          style={{ color: "var(--color-text-muted)", letterSpacing: "0.15em" }}
+        >
+          Engine
+        </span>
+        <div className="flex gap-1.5">
+          {ENGINES.map((e) => {
+            const active = engineOverride === e.value;
+            return (
+              <button
+                key={e.value ?? "auto"}
+                onClick={() => setEngineOverride(e.value)}
+                disabled={isLoading}
+                title={e.hint}
+                className="px-3 py-1 rounded-full text-xs whitespace-nowrap transition-all disabled:opacity-50"
+                style={{
+                  background: active ? "var(--color-text)" : "transparent",
+                  color: active ? "var(--color-background)" : "var(--color-text-muted)",
+                  border: active
+                    ? "1px solid var(--color-text)"
+                    : "1px solid var(--color-border)",
+                  fontWeight: active ? 600 : 400,
+                }}
+              >
+                <span className="mr-1">{e.emoji}</span>
+                {e.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <ChatArea
         messages={messages}
         streamingText={streamingText}

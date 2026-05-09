@@ -32,6 +32,8 @@ FEEDBACK_FILE = DATA_DIR / "feedback_patterns.jsonl"
 VOICE_FILE = DATA_DIR / "voice_profile.jsonl"
 FAILURES_FILE = DATA_DIR / "failures.jsonl"
 TASKS_FILE = DATA_DIR / "tasks.jsonl"
+MEMOS_FILE = DATA_DIR / "memos.jsonl"
+TRAINING_PROGRESS_FILE = DATA_DIR / "training_progress.jsonl"
 
 # Memory files
 HEURISTICS_FILE = MEMORY_DIR / "heuristics.yaml"

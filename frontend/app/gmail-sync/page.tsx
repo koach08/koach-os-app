@@ -82,7 +82,10 @@ export default function GmailSyncPage() {
     try {
       // Auto-scale email limit with timespan to ensure sufficient coverage
       const limit = days <= 7 ? 20 : days <= 30 ? 50 : days <= 90 ? 100 : 200;
-      const res = await fetch("/api/gmail/extract-events", {
+      // Bypass Vercel rewrite (30s timeout) — hit Railway directly. CORS is pre-allowed.
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+      const url = `${apiBase}/api/gmail/extract-events`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ days, limit, engine: "gemini" }),

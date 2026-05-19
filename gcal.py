@@ -45,62 +45,79 @@ REMINDER_PRESETS = {
 }
 
 
-def _load_token_dict() -> dict | None:
+def _token_env_name(slot: int) -> str:
+    """slot 1 = GOOGLE_TOKEN_JSON, slot 2 = GOOGLE_TOKEN_JSON_2, ..."""
+    return "GOOGLE_TOKEN_JSON" if slot == 1 else f"GOOGLE_TOKEN_JSON_{slot}"
+
+
+def _token_file_path(slot: int):
+    """slot 1 = token.json, slot 2 = token_2.json, ..."""
+    return TOKEN_FILE if slot == 1 else TOKEN_FILE.parent / f"token_{slot}.json"
+
+
+def _load_token_dict(slot: int = 1) -> dict | None:
     """Load token from env var (Railway) or local file (dev)."""
-    token_str = get_secret("GOOGLE_TOKEN_JSON")
+    token_str = get_secret(_token_env_name(slot))
     if token_str:
         try:
             return json.loads(token_str)
         except Exception:
             pass
-    if TOKEN_FILE.exists():
+    fp = _token_file_path(slot)
+    if fp.exists():
         try:
-            return json.loads(TOKEN_FILE.read_text())
+            return json.loads(fp.read_text())
         except Exception:
             pass
     return None
 
 
+def _configured_slots(max_slots: int = 5) -> list[int]:
+    """Return list of slot numbers (1..N) that have a token configured."""
+    return [s for s in range(1, max_slots + 1) if _load_token_dict(s) is not None]
+
+
 def is_configured() -> bool:
-    """Check if Google integration is set up."""
-    return _load_token_dict() is not None
+    """Check if at least one Google account is set up."""
+    return len(_configured_slots()) > 0
 
 
-def _get_creds():
-    """Get Google OAuth credentials from env var or local file."""
+def _get_creds(slot: int = 1):
+    """Get Google OAuth credentials for a specific slot."""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    token_dict = _load_token_dict()
+    token_dict = _load_token_dict(slot)
     if not token_dict:
         return None
 
     creds = Credentials.from_authorized_user_info(token_dict, SCOPES)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        if TOKEN_FILE.exists():
-            TOKEN_FILE.write_text(creds.to_json())
+        fp = _token_file_path(slot)
+        if fp.exists():
+            fp.write_text(creds.to_json())
 
     return creds
 
 
-def _get_service():
-    """Build the Google Calendar API service."""
+def _get_service(slot: int = 1):
+    """Build the Google Calendar API service for a specific slot (default: primary)."""
     from googleapiclient.discovery import build
 
-    creds = _get_creds()
+    creds = _get_creds(slot)
     if not creds:
-        raise RuntimeError("Google credentials not configured")
+        raise RuntimeError(f"Google credentials not configured for slot {slot}")
     return build("calendar", "v3", credentials=creds)
 
 
-def _get_gmail_service():
-    """Build the Gmail API service."""
+def _get_gmail_service(slot: int = 1):
+    """Build the Gmail API service for a specific slot."""
     from googleapiclient.discovery import build
 
-    creds = _get_creds()
+    creds = _get_creds(slot)
     if not creds:
-        raise RuntimeError("Google credentials not configured")
+        raise RuntimeError(f"Google credentials not configured for slot {slot}")
     return build("gmail", "v1", credentials=creds)
 
 
@@ -235,9 +252,9 @@ def create_event(
     return result
 
 
-def list_recent_emails(days: int = 3, max_results: int = 20) -> list[dict]:
-    """Fetch recent emails. Returns list of {id, from, subject, snippet, date, body}."""
-    service = _get_gmail_service()
+def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:
+    """Fetch recent emails from a single slot. Returns list of dicts."""
+    service = _get_gmail_service(slot)
     query = f"newer_than:{days}d -in:spam -in:trash"
 
     listing = service.users().messages().list(
@@ -251,10 +268,28 @@ def list_recent_emails(days: int = 3, max_results: int = 20) -> list[dict]:
             msg = service.users().messages().get(
                 userId="me", id=ref["id"], format="full"
             ).execute()
-            emails.append(_parse_message(msg))
+            parsed = _parse_message(msg)
+            parsed["_account_slot"] = slot
+            emails.append(parsed)
         except Exception:
             continue
     return emails
+
+
+def list_recent_emails_all_accounts(days: int = 3, max_results: int = 20) -> list[dict]:
+    """Fetch recent emails from ALL configured accounts. Returns merged list."""
+    all_emails: list[dict] = []
+    errors: list[str] = []
+    for slot in _configured_slots():
+        try:
+            emails = list_recent_emails(days=days, max_results=max_results, slot=slot)
+            all_emails.extend(emails)
+        except Exception as e:
+            errors.append(f"slot {slot}: {e}")
+    # If everything failed, raise the first error so caller sees it
+    if not all_emails and errors:
+        raise RuntimeError("; ".join(errors))
+    return all_emails
 
 
 def _parse_message(msg: dict) -> dict:

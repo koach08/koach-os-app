@@ -56,13 +56,20 @@ def _token_file_path(slot: int):
 
 
 def _load_token_dict(slot: int = 1) -> dict | None:
-    """Load token from env var (Railway) or local file (dev)."""
+    """Load token from env var (Railway) or local file (dev).
+    Tolerates whitespace/newlines that dashboard UIs may insert.
+    """
     token_str = get_secret(_token_env_name(slot))
     if token_str:
+        # Strip stray whitespace/newlines from dashboard paste
+        cleaned = token_str.strip().replace("\r", "").replace("\n", "")
         try:
-            return json.loads(token_str)
+            return json.loads(cleaned)
         except Exception:
-            pass
+            try:
+                return json.loads(token_str)
+            except Exception:
+                pass
     fp = _token_file_path(slot)
     if fp.exists():
         try:

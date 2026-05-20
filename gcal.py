@@ -56,12 +56,28 @@ def _token_file_path(slot: int):
 
 
 def _load_token_dict(slot: int = 1) -> dict | None:
-    """Load token from env var (Railway) or local file (dev).
-    Tolerates whitespace/newlines that dashboard UIs may insert.
+    """Load token from env var (base64 first, then JSON), then local file.
+
+    Priority:
+      1. GOOGLE_TOKEN_JSON_B64 (slot 1) / GOOGLE_TOKEN_JSON_N_B64 (slot N) — base64
+      2. GOOGLE_TOKEN_JSON / GOOGLE_TOKEN_JSON_N — plain JSON
+      3. token.json / token_N.json file (local dev)
     """
+    import base64
+
+    # 1. Try base64-encoded env var (avoids dashboard newline issues)
+    b64_name = _token_env_name(slot) + "_B64"
+    b64_str = get_secret(b64_name)
+    if b64_str:
+        try:
+            decoded = base64.b64decode(b64_str.strip()).decode("utf-8")
+            return json.loads(decoded)
+        except Exception:
+            pass
+
+    # 2. Try plain JSON env var
     token_str = get_secret(_token_env_name(slot))
     if token_str:
-        # Strip stray whitespace/newlines from dashboard paste
         cleaned = token_str.strip().replace("\r", "").replace("\n", "")
         try:
             return json.loads(cleaned)
@@ -70,6 +86,8 @@ def _load_token_dict(slot: int = 1) -> dict | None:
                 return json.loads(token_str)
             except Exception:
                 pass
+
+    # 3. Local file fallback
     fp = _token_file_path(slot)
     if fp.exists():
         try:

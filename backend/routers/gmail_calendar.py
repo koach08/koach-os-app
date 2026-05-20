@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from gcal import (
     is_configured,
     list_recent_emails,
+    list_recent_emails_all_accounts,
     create_event as gcal_create_event,
 )
 from router import call_ai, DEFAULT_MODELS
@@ -32,7 +33,7 @@ def gmail_recent(days: int = Query(3, ge=1, le=365), limit: int = Query(20, ge=1
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
     try:
-        emails = list_recent_emails(days=days, max_results=limit)
+        emails = list_recent_emails_all_accounts(days=days, max_results=limit)
         return {"emails": emails, "count": len(emails)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
@@ -74,16 +75,16 @@ def extract_events(req: ExtractRequest):
         raise HTTPException(status_code=400, detail="Google integration not configured")
 
     try:
-        emails = list_recent_emails(days=req.days, max_results=req.limit)
+        emails = list_recent_emails_all_accounts(days=req.days, max_results=req.limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
 
     if not emails:
         return {"proposals": [], "emails_scanned": 0}
 
-    # Build prompt for the AI
+    # Build prompt for the AI (include account slot for traceability)
     emails_text = "\n\n---EMAIL---\n".join(
-        f"ID: {e['id']}\nFrom: {e['from']}\nSubject: {e['subject']}\nDate: {e['date']}\n\n{e['body'] or e['snippet']}"
+        f"ID: {e['id']} (account {e.get('_account_slot', 1)})\nFrom: {e['from']}\nSubject: {e['subject']}\nDate: {e['date']}\n\n{e['body'] or e['snippet']}"
         for e in emails
     )
 

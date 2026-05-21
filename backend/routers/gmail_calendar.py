@@ -148,12 +148,21 @@ Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
+    # Sometimes AI wraps JSON in extra text — find first [ and last ]
+    if not cleaned.startswith("["):
+        first = cleaned.find("[")
+        last = cleaned.rfind("]")
+        if first != -1 and last != -1 and last > first:
+            cleaned = cleaned[first:last + 1]
+
+    parse_error = None
     try:
         proposals = json.loads(cleaned)
         if not isinstance(proposals, list):
             proposals = []
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         proposals = []
+        parse_error = str(e)
 
     # Normalize each proposal
     normalized = []
@@ -177,6 +186,8 @@ Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
         "emails_scanned": len(emails),
         "engine_used": engine,
         "model_used": model,
+        "ai_raw_preview": response[:500] if not normalized else None,
+        "parse_error": parse_error,
     }
 
 

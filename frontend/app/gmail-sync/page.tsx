@@ -67,12 +67,15 @@ export default function GmailSyncPage() {
   const [created, setCreated] = useState<Record<number, { ok: boolean; link?: string; err?: string }>>({});
   const [days, setDays] = useState(3);
 
+  // Direct Railway URL (env-driven). Avoids Vercel proxy 30s timeout.
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+
   useEffect(() => {
-    fetch("/api/gmail/status")
+    fetch(`${apiBase}/api/gmail/status`)
       .then((r) => r.json() as Promise<StatusResponse>)
       .then((d) => setConfigured(d.configured))
       .catch(() => setConfigured(false));
-  }, []);
+  }, [apiBase]);
 
   const handleExtract = async () => {
     setLoading(true);
@@ -82,8 +85,6 @@ export default function GmailSyncPage() {
     try {
       // Auto-scale email limit with timespan to ensure sufficient coverage
       const limit = days <= 7 ? 20 : days <= 30 ? 50 : days <= 90 ? 100 : 200;
-      // Bypass Vercel rewrite (30s timeout) — hit Railway directly. CORS is pre-allowed.
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
       const url = `${apiBase}/api/gmail/extract-events`;
       const res = await fetch(url, {
         method: "POST",
@@ -106,7 +107,7 @@ export default function GmailSyncPage() {
 
   const handleAddToCalendar = async (idx: number, p: Proposal) => {
     try {
-      const res = await fetch("/api/calendar/create-event", {
+      const res = await fetch(`${apiBase}/api/calendar/create-event`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

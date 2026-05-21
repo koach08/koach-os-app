@@ -16,6 +16,7 @@ from gcal import (
     list_recent_emails_all_accounts,
     create_event as gcal_create_event,
 )
+from data_manager import now_jst
 from router import call_ai, DEFAULT_MODELS
 
 router = APIRouter()
@@ -88,27 +89,42 @@ def extract_events(req: ExtractRequest):
         for e in emails
     )
 
-    system_prompt = """You extract calendar event candidates from emails.
+    # Current date for context (helps avoid mis-classifying recent past as old)
+    today_str = now_jst().strftime("%Y-%m-%d (%A)")
 
-Rules:
+    system_prompt = f"""You extract calendar event candidates and reminders from emails.
+
+TODAY IS: {today_str}
+
+Be GENEROUS in extracting — better to over-include than miss something.
+Items to extract:
+- Meetings, committees, classes, exams (会議・委員会・授業・試験)
+- Deadlines, due dates, submission requests (締切・提出期限)
+- Appointments, interviews, calls (面談・面接)
+- Reminders about ongoing things (進行中の試験運用変更・連絡事項) — even if no explicit future date, include as confidence=low with today's date
+- Travel, flights, reservations
+- ANY mention of a specific date or time someone needs to attend / submit / do something
+
+DO include events from the recent past if the email talks about ongoing situations
+(e.g., "中間試験中の入室キーワード" relates to an ongoing exam period — include it).
+
+Output rules:
 - Output ONLY a JSON array. No markdown, no commentary.
-- Each item: {title, start_iso, end_iso, description, location, confidence, event_type, source_email_id, source_subject}
+- Each item: {{title, start_iso, end_iso, description, location, confidence, event_type, source_email_id, source_subject}}
 - Use ISO 8601 with timezone (e.g., "2026-05-15T14:00:00+09:00") OR all-day "YYYY-MM-DD"
 - Default timezone: Asia/Tokyo (+09:00)
-- confidence: "high" (explicit date/time), "medium" (inferred), "low" (vague)
+- If only an approximate date is mentioned (今週中, 来週など), set confidence=low and pick a reasonable date
+- confidence: "high" (explicit date/time), "medium" (inferred), "low" (vague or implicit)
 - event_type:
-    "meeting" — 会議・打ち合わせ・面談
+    "meeting" — 会議・打ち合わせ・面談・授業
     "committee" — 委員会・理事会・審議会
     "deadline" — 締め切り・提出期限・due
-    "default" — その他
-- Skip emails with no scheduling info (newsletters, marketing, automated digests)
-- Skip past events (only future events)
-- For meetings without explicit end time, default to 1-hour duration
-- For deadlines: start_iso = end_iso (the deadline moment), all-day if no time specified
+    "default" — リマインダー、その他
+- SKIP only obvious marketing/spam (Skyscanner deals, Amazon promos, newsletters with no specific user action)
 - title: concise, in the email's language (Japanese stays Japanese)
 - If multiple events in one email, output multiple entries
 
-Return [] if no events detected."""
+Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
 
     user_msg = f"Extract calendar events from these emails:\n\n{emails_text}"
 

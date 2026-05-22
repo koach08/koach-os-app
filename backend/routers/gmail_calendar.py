@@ -290,6 +290,13 @@ Items to extract:
 - Weekly recurring classes (timetable/時間割): include `recurrence` with the RRULE-compatible info
 - Be GENEROUS — include anything resembling a scheduled gathering, even if labeled vaguely (例: ○○について、説明会、報告会、懇談会)
 
+**重要 — 表形式の日程表（教授会日程表・年間予定表など）**:
+- 表の行で「6/10(火) 14:00〜16:00 教授会」のような形式を見つけたら、すべて個別のイベントとして抽出
+- 月だけの行（例: 「6月」セル → その下に複数の日付）の場合、各日付ごとに別エントリ作成
+- 同じ会議が複数月にわたって列挙されている場合（例: 教授会 4/15, 5/13, 6/10, 7/8, …）も全て抽出（必要なら一度に20-50件）
+- パイプ区切り `|` で来た行はテーブル行 — 各セルを意味的に解釈（曜日 / 日付 / 時間 / 会議名 / 場所）
+- 「定例○○会議」「第N回○○」のような繰り返し型でも、一覧されている全日程を個別エントリにする
+
 Output rules:
 - Output ONLY a JSON array. No markdown, no commentary.
 - Each item: {{title, start_iso, end_iso, description, location, confidence, event_type, recurrence, source_email_id, source_subject}}
@@ -419,26 +426,48 @@ async def extract_events_from_pdf(
     engine: str = "gemini",
 ):
     """Extract calendar candidates from an uploaded PDF (日程表・年間予定表 etc.)."""
-    try:
-        from PyPDF2 import PdfReader
-    except ImportError:
-        raise HTTPException(status_code=500, detail="PyPDF2 not available")
-
     contents = await file.read()
     if not contents:
         raise HTTPException(status_code=400, detail="empty file")
 
+    text_pages: list[str] = []
+    # First try pdfplumber (preserves tables/columns), fall back to PyPDF2
     try:
-        reader = PdfReader(io.BytesIO(contents))
-        text_pages = []
-        for p in reader.pages:
-            try:
-                text_pages.append(p.extract_text() or "")
-            except Exception:
-                text_pages.append("")
-        full_text = "\n\n---PAGE---\n\n".join(text_pages)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(contents)) as pdf:
+            for page in pdf.pages:
+                page_parts: list[str] = []
+                # extract tables separately so rows stay aligned
+                try:
+                    tables = page.extract_tables() or []
+                    for table in tables:
+                        for row in table:
+                            cells = [str(c or "").strip() for c in row]
+                            if any(cells):
+                                page_parts.append(" | ".join(cells))
+                except Exception:
+                    pass
+                # then plain text (avoid duplicating table content by keeping text last and unique-ish)
+                try:
+                    txt = page.extract_text() or ""
+                    if txt.strip():
+                        page_parts.append(txt)
+                except Exception:
+                    pass
+                text_pages.append("\n".join(page_parts))
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(io.BytesIO(contents))
+            for p in reader.pages:
+                try:
+                    text_pages.append(p.extract_text() or "")
+                except Exception:
+                    text_pages.append("")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+
+    full_text = "\n\n---PAGE---\n\n".join(text_pages)
 
     if not full_text.strip():
         return {

@@ -66,6 +66,7 @@ export default function GmailSyncPage() {
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Record<number, { ok: boolean; link?: string; err?: string }>>({});
   const [days, setDays] = useState(3);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Direct Railway URL (env-driven). Avoids Vercel proxy 30s timeout.
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
@@ -82,26 +83,87 @@ export default function GmailSyncPage() {
     setError(null);
     setProposals([]);
     setCreated({});
+    setProgress(null);
     try {
-      // Auto-scale email limit with timespan to ensure sufficient coverage
       const limit = days <= 7 ? 20 : days <= 30 ? 50 : days <= 90 ? 100 : 200;
-      const url = `${apiBase}/api/gmail/extract-events`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days, limit, engine: "gemini" }),
-      });
-      if (!res.ok) {
-        const detail = await res.text();
-        throw new Error(detail || `HTTP ${res.status}`);
+
+      // Short range: one-shot endpoint
+      if (days <= 14) {
+        const res = await fetch(`${apiBase}/api/gmail/extract-events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ days, limit, engine: "gemini" }),
+        });
+        if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+        const data = (await res.json()) as ExtractResponse;
+        setProposals(data.proposals);
+        setMeta({ scanned: data.emails_scanned, engine: data.engine_used, model: data.model_used });
+        return;
       }
-      const data = (await res.json()) as ExtractResponse;
-      setProposals(data.proposals);
-      setMeta({ scanned: data.emails_scanned, engine: data.engine_used, model: data.model_used });
+
+      // Long range: fetch all emails, then process in chunks from the browser to avoid Railway proxy timeout
+      const recentRes = await fetch(`${apiBase}/api/gmail/recent?days=${days}&limit=${limit}`);
+      if (!recentRes.ok) throw new Error((await recentRes.text()) || `HTTP ${recentRes.status}`);
+      const { emails } = (await recentRes.json()) as { emails: any[]; count: number };
+      if (!emails || emails.length === 0) {
+        setMeta({ scanned: 0, engine: "gemini", model: "—" });
+        return;
+      }
+
+      const CHUNK = 15;
+      const chunks: any[][] = [];
+      for (let i = 0; i < emails.length; i += CHUNK) chunks.push(emails.slice(i, i + CHUNK));
+      setProgress({ done: 0, total: chunks.length });
+
+      const all: Proposal[] = [];
+      let doneCount = 0;
+      let lastEngine = "gemini";
+      let lastModel = "—";
+      // Run chunks with limited concurrency (3 parallel) to avoid hammering Gemini quotas
+      const CONCURRENCY = 3;
+      const queue = [...chunks];
+      const runners = Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, async () => {
+        while (queue.length > 0) {
+          const batch = queue.shift();
+          if (!batch) break;
+          try {
+            const r = await fetch(`${apiBase}/api/gmail/extract-events-from-emails`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emails: batch, engine: "gemini" }),
+            });
+            if (r.ok) {
+              const d = (await r.json()) as ExtractResponse;
+              all.push(...d.proposals);
+              lastEngine = d.engine_used;
+              lastModel = d.model_used;
+            }
+          } catch {
+            // skip failed batch; surface aggregate later
+          } finally {
+            doneCount += 1;
+            setProgress({ done: doneCount, total: chunks.length });
+          }
+        }
+      });
+      await Promise.all(runners);
+
+      // Dedupe by (title, start_iso)
+      const seen = new Set<string>();
+      const deduped = all.filter((p) => {
+        const k = `${p.title}|${p.start_iso}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+
+      setProposals(deduped);
+      setMeta({ scanned: emails.length, engine: lastEngine, model: lastModel });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -232,7 +294,11 @@ export default function GmailSyncPage() {
                       boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
                     }}
                   >
-                    {loading ? "解析中..." : "予定を抽出"}
+                    {loading
+                      ? progress
+                        ? `解析中... ${progress.done}/${progress.total} batch`
+                        : "解析中..."
+                      : "予定を抽出"}
                   </button>
                 </div>
                 {meta && !loading && (

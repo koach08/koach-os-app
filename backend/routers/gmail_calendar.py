@@ -70,6 +70,13 @@ class EventProposal(BaseModel):
     source_subject: str = ""
 
 
+class ExtractFromEmailsRequest(BaseModel):
+    """Accept a pre-fetched batch of emails for analysis. Frontend chunks long-range fetches."""
+    emails: list[dict]
+    engine: str = "gemini"
+    model: str | None = None
+
+
 BATCH_SIZE = 15  # emails per AI call — keeps each call under ~30s
 
 
@@ -225,6 +232,29 @@ async def extract_events(req: ExtractRequest):
         "model_used": model,
         "ai_raw_preview": raw_previews[0] if raw_previews and not deduped else None,
         "parse_error": "; ".join(parse_errors) if parse_errors else None,
+    }
+
+
+@router.post("/gmail/extract-events-from-emails")
+def extract_events_from_emails(req: ExtractFromEmailsRequest):
+    """Analyze a pre-fetched batch of emails. Frontend uses this for long-range chunked processing."""
+    if not req.emails:
+        return {"proposals": [], "emails_scanned": 0}
+
+    today_str = now_jst().strftime("%Y-%m-%d (%A)")
+    system_prompt = _build_system_prompt(today_str)
+    engine = req.engine if req.engine in DEFAULT_MODELS else "gemini"
+    model = req.model or DEFAULT_MODELS.get(engine, DEFAULT_MODELS["gemini"])
+
+    proposals, parse_error, raw_preview = _process_batch(req.emails, system_prompt, engine, model)
+
+    return {
+        "proposals": proposals,
+        "emails_scanned": len(req.emails),
+        "engine_used": engine,
+        "model_used": model,
+        "ai_raw_preview": raw_preview if not proposals else None,
+        "parse_error": parse_error,
     }
 
 

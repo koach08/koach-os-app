@@ -67,6 +67,9 @@ export default function GmailSyncPage() {
   const [created, setCreated] = useState<Record<number, { ok: boolean; link?: string; err?: string }>>({});
   const [days, setDays] = useState(3);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [mode, setMode] = useState<"gmail" | "pdf">("gmail");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfMeta, setPdfMeta] = useState<{ filename: string; pageCount: number } | null>(null);
 
   // Direct Railway URL (env-driven). Avoids Vercel proxy 30s timeout.
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
@@ -178,6 +181,38 @@ export default function GmailSyncPage() {
     }
   };
 
+  const handleExtractPdf = async () => {
+    if (!pdfFile) {
+      setError("PDF ファイルを選んでください");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setProposals([]);
+    setCreated({});
+    setPdfMeta(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", pdfFile);
+      const res = await fetch(`${apiBase}/api/calendar/extract-events-from-pdf?engine=gemini`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      setProposals(data.proposals || []);
+      setPdfMeta({ filename: data.filename, pageCount: data.page_count });
+      setMeta({ scanned: data.page_count || 0, engine: data.engine_used || "gemini", model: data.model_used || "—" });
+      if (data.parse_error && (data.proposals || []).length === 0) {
+        setError(data.parse_error);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleAddToCalendar = async (idx: number, p: Proposal) => {
     try {
       const res = await fetch(`${apiBase}/api/calendar/create-event`, {
@@ -267,6 +302,62 @@ export default function GmailSyncPage() {
                 className="rounded-2xl p-6"
                 style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
               >
+                {/* Mode tabs */}
+                <div className="flex gap-2 mb-5">
+                  {(["gmail", "pdf"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setMode(m);
+                        setProposals([]);
+                        setError(null);
+                        setMeta(null);
+                        setPdfMeta(null);
+                      }}
+                      disabled={loading}
+                      className="px-4 py-1.5 rounded-full text-sm font-medium transition-all"
+                      style={{
+                        background: mode === m ? "var(--color-accent)" : "transparent",
+                        color: mode === m ? "white" : "var(--color-text-muted)",
+                        border: `1px solid ${mode === m ? "var(--color-accent)" : "var(--color-border)"}`,
+                      }}
+                    >
+                      {m === "gmail" ? "📧 Gmail" : "📄 PDF"}
+                    </button>
+                  ))}
+                </div>
+
+                {mode === "pdf" && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
+                      disabled={loading}
+                      className="text-sm"
+                      style={{ color: "var(--color-text-muted)" }}
+                    />
+                    <button
+                      onClick={handleExtractPdf}
+                      disabled={loading || !pdfFile}
+                      className="ml-auto px-5 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+                      style={{
+                        background: "var(--color-accent)",
+                        color: "white",
+                        boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
+                      }}
+                    >
+                      {loading ? "解析中..." : "PDF を解析"}
+                    </button>
+                    {pdfMeta && (
+                      <div className="w-full mt-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {pdfMeta.filename} ({pdfMeta.pageCount} ページ)
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {mode === "gmail" && (
                 <div className="flex items-center gap-3 flex-wrap">
                   <label className="text-sm" style={{ color: "var(--color-text-muted)" }}>
                     過去
@@ -312,9 +403,12 @@ export default function GmailSyncPage() {
                       : "予定を抽出"}
                   </button>
                 </div>
+                )}
                 {meta && !loading && (
                   <div className="mt-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                    {meta.scanned} 件のメール解析 / {meta.engine} ({meta.model})
+                    {mode === "pdf"
+                      ? `PDF: ${meta.scanned} ページ / ${meta.engine} (${meta.model})`
+                      : `${meta.scanned} 件のメール解析 / ${meta.engine} (${meta.model})`}
                   </div>
                 )}
               </div>

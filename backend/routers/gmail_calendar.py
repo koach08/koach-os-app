@@ -6,15 +6,17 @@ POST /api/gmail/auto-sync — full pipeline: fetch → extract → return propos
 """
 
 import asyncio
+import io
 import json
 import re
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
 from gcal import (
     is_configured,
     list_recent_emails,
     list_recent_emails_all_accounts,
+    list_upcoming_events,
     create_event as gcal_create_event,
 )
 from data_manager import now_jst
@@ -270,6 +272,149 @@ def extract_events_from_emails(req: ExtractFromEmailsRequest):
         "ai_raw_preview": raw_preview if not proposals else None,
         "parse_error": parse_error,
     }
+
+
+@router.post("/calendar/extract-events-from-pdf")
+async def extract_events_from_pdf(
+    file: UploadFile = File(...),
+    engine: str = "gemini",
+):
+    """Extract calendar candidates from an uploaded PDF (日程表・年間予定表 etc.)."""
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PyPDF2 not available")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="empty file")
+
+    try:
+        reader = PdfReader(io.BytesIO(contents))
+        text_pages = []
+        for p in reader.pages:
+            try:
+                text_pages.append(p.extract_text() or "")
+            except Exception:
+                text_pages.append("")
+        full_text = "\n\n---PAGE---\n\n".join(text_pages)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+
+    if not full_text.strip():
+        return {
+            "proposals": [],
+            "parse_error": "PDF からテキストを抽出できませんでした（画像のみ・スキャンPDF の可能性）",
+            "filename": file.filename,
+            "page_count": len(text_pages),
+        }
+
+    today_str = now_jst().strftime("%Y-%m-%d (%A)")
+    system_prompt = f"""You extract calendar events from a document (schedule sheet, syllabus, meeting agenda).
+
+TODAY IS: {today_str}
+
+The text comes from a PDF — may contain table-formatted dates, semester schedules, exam schedules, committee schedules.
+
+Items to extract:
+- All meetings, classes, exams, committees, deadlines with dates/times
+- All-day events if no time specified
+- Multi-day events as separate entries OR one entry with start/end spanning the range (your choice based on context)
+
+Output rules:
+- Output ONLY a JSON array. No markdown, no commentary.
+- Each item: {{title, start_iso, end_iso, description, location, confidence, event_type, source_email_id, source_subject}}
+- ISO 8601 with timezone (+09:00) or all-day "YYYY-MM-DD"
+- source_email_id: leave "" (it's from PDF, not email)
+- source_subject: use the document filename or section header
+- event_type: meeting/committee/deadline/default
+- title: in Japanese if source is Japanese
+- If a year is omitted, assume the most likely year given today's date
+
+Return [] only if no dates can be identified."""
+
+    user_msg = f"Extract calendar events from this PDF text (filename: {file.filename}):\n\n{full_text[:80000]}"
+    selected_engine = engine if engine in DEFAULT_MODELS else "gemini"
+    model = DEFAULT_MODELS.get(selected_engine, DEFAULT_MODELS["gemini"])
+
+    # Reuse _process_batch's parsing logic by calling AI inline (text is one big "email")
+    fake_batch = [{
+        "id": "pdf",
+        "from": file.filename or "uploaded.pdf",
+        "subject": file.filename or "PDF",
+        "date": today_str,
+        "body": full_text[:80000],
+        "snippet": "",
+        "_account_slot": 0,
+    }]
+    # _process_batch builds its own emails_text — but we need a custom prompt. Inline the call:
+    try:
+        response = call_ai(
+            messages=[{"role": "user", "content": user_msg}],
+            system=system_prompt,
+            engine=selected_engine,
+            model=model,
+            max_tokens=8000,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI extraction failed: {e}")
+
+    cleaned = response.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    if not cleaned.startswith("["):
+        first = cleaned.find("[")
+        last = cleaned.rfind("]")
+        if first != -1 and last != -1 and last > first:
+            cleaned = cleaned[first:last + 1]
+
+    parse_error = None
+    try:
+        proposals = json.loads(cleaned)
+        if not isinstance(proposals, list):
+            proposals = []
+    except json.JSONDecodeError as e:
+        proposals = []
+        parse_error = str(e)
+
+    normalized = []
+    for p in proposals:
+        if not isinstance(p, dict):
+            continue
+        normalized.append({
+            "title": str(p.get("title", ""))[:200],
+            "start_iso": str(p.get("start_iso", "")),
+            "end_iso": str(p.get("end_iso", "")),
+            "description": str(p.get("description", ""))[:500],
+            "location": str(p.get("location", ""))[:200],
+            "confidence": p.get("confidence", "medium"),
+            "event_type": p.get("event_type", "default"),
+            "source_email_id": "",
+            "source_subject": file.filename or "PDF",
+        })
+
+    return {
+        "proposals": normalized,
+        "filename": file.filename,
+        "page_count": len(text_pages),
+        "engine_used": selected_engine,
+        "model_used": model,
+        "parse_error": parse_error,
+        "ai_raw_preview": response[:500] if not normalized else None,
+    }
+
+
+@router.get("/calendar/upcoming")
+def calendar_upcoming(days_ahead: int = Query(7, ge=1, le=60)):
+    """Read upcoming events from Google Calendar (the source of truth)."""
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+    try:
+        events = list_upcoming_events(days_ahead=days_ahead)
+        return {"events": events, "count": len(events)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Calendar read failed: {e}")
 
 
 class CreateEventRequest(BaseModel):

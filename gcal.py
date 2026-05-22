@@ -277,6 +277,39 @@ def create_event(
     return result
 
 
+def list_upcoming_events(days_ahead: int = 7) -> list[dict]:
+    """Read upcoming events from primary Google Calendar."""
+    from datetime import datetime, timedelta, timezone
+    service = _get_service()
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(days=days_ahead)
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=now.isoformat(),
+        timeMax=end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=100,
+    ).execute()
+    items = events_result.get("items", [])
+    out: list[dict] = []
+    for ev in items:
+        start = ev.get("start", {})
+        end_ = ev.get("end", {})
+        out.append({
+            "id": ev.get("id", ""),
+            "title": ev.get("summary", "(無題)"),
+            "start_iso": start.get("dateTime") or start.get("date") or "",
+            "end_iso": end_.get("dateTime") or end_.get("date") or "",
+            "all_day": "date" in start,
+            "location": ev.get("location", ""),
+            "description": ev.get("description", ""),
+            "html_link": ev.get("htmlLink", ""),
+            "event_type": detect_event_type(ev.get("summary", ""), ev.get("description", "")),
+        })
+    return out
+
+
 def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:
     """Fetch recent emails from a single slot. Uses Gmail batch API for speed."""
     service = _get_gmail_service(slot)

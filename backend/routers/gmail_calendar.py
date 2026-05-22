@@ -274,80 +274,41 @@ def extract_events_from_emails(req: ExtractFromEmailsRequest):
     }
 
 
-@router.post("/calendar/extract-events-from-pdf")
-async def extract_events_from_pdf(
-    file: UploadFile = File(...),
-    engine: str = "gemini",
-):
-    """Extract calendar candidates from an uploaded PDF (日程表・年間予定表 etc.)."""
-    try:
-        from PyPDF2 import PdfReader
-    except ImportError:
-        raise HTTPException(status_code=500, detail="PyPDF2 not available")
-
-    contents = await file.read()
-    if not contents:
-        raise HTTPException(status_code=400, detail="empty file")
-
-    try:
-        reader = PdfReader(io.BytesIO(contents))
-        text_pages = []
-        for p in reader.pages:
-            try:
-                text_pages.append(p.extract_text() or "")
-            except Exception:
-                text_pages.append("")
-        full_text = "\n\n---PAGE---\n\n".join(text_pages)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
-
-    if not full_text.strip():
-        return {
-            "proposals": [],
-            "parse_error": "PDF からテキストを抽出できませんでした（画像のみ・スキャンPDF の可能性）",
-            "filename": file.filename,
-            "page_count": len(text_pages),
-        }
-
+def _extract_with_ai(full_text: str, source_label: str, engine: str) -> dict:
+    """Shared AI extraction for PDF/Excel/text. Returns the same shape as the PDF endpoint."""
     today_str = now_jst().strftime("%Y-%m-%d (%A)")
-    system_prompt = f"""You extract calendar events from a document (schedule sheet, syllabus, meeting agenda).
+    system_prompt = f"""You extract calendar events from a document (schedule sheet, syllabus, timetable, meeting agenda).
 
 TODAY IS: {today_str}
 
-The text comes from a PDF — may contain table-formatted dates, semester schedules, exam schedules, committee schedules.
+The text comes from a PDF/Excel — may contain table-formatted dates, semester schedules, exam schedules, committee schedules, weekly timetables.
 
 Items to extract:
 - All meetings, classes, exams, committees, deadlines with dates/times
 - All-day events if no time specified
-- Multi-day events as separate entries OR one entry with start/end spanning the range (your choice based on context)
+- Weekly recurring classes (timetable/時間割): include `recurrence` with the RRULE-compatible info
 
 Output rules:
 - Output ONLY a JSON array. No markdown, no commentary.
-- Each item: {{title, start_iso, end_iso, description, location, confidence, event_type, source_email_id, source_subject}}
+- Each item: {{title, start_iso, end_iso, description, location, confidence, event_type, recurrence, source_email_id, source_subject}}
 - ISO 8601 with timezone (+09:00) or all-day "YYYY-MM-DD"
-- source_email_id: leave "" (it's from PDF, not email)
-- source_subject: use the document filename or section header
+- source_email_id: leave ""
+- source_subject: use the document filename/sheet name
 - event_type: meeting/committee/deadline/default
 - title: in Japanese if source is Japanese
 - If a year is omitted, assume the most likely year given today's date
+- For weekly recurring (e.g. "月曜 1限 線形代数"), set:
+    - start_iso to the FIRST occurrence (e.g. semester start week, that Monday)
+    - recurrence: "FREQ=WEEKLY;UNTIL=YYYYMMDDT235959Z" (semester end if known, otherwise omit UNTIL)
+    - If recurrence not needed (one-off), set recurrence: ""
+- For Excel timetable cells, infer the time from period columns (1限=08:45-10:15, 2限=10:30-12:00, 3限=13:00-14:30, 4限=14:45-16:15, 5限=16:30-18:00) unless the document specifies otherwise
 
 Return [] only if no dates can be identified."""
 
-    user_msg = f"Extract calendar events from this PDF text (filename: {file.filename}):\n\n{full_text[:80000]}"
+    user_msg = f"Extract calendar events from this document (source: {source_label}):\n\n{full_text[:80000]}"
     selected_engine = engine if engine in DEFAULT_MODELS else "gemini"
     model = DEFAULT_MODELS.get(selected_engine, DEFAULT_MODELS["gemini"])
 
-    # Reuse _process_batch's parsing logic by calling AI inline (text is one big "email")
-    fake_batch = [{
-        "id": "pdf",
-        "from": file.filename or "uploaded.pdf",
-        "subject": file.filename or "PDF",
-        "date": today_str,
-        "body": full_text[:80000],
-        "snippet": "",
-        "_account_slot": 0,
-    }]
-    # _process_batch builds its own emails_text — but we need a custom prompt. Inline the call:
     try:
         response = call_ai(
             messages=[{"role": "user", "content": user_msg}],
@@ -390,19 +351,105 @@ Return [] only if no dates can be identified."""
             "location": str(p.get("location", ""))[:200],
             "confidence": p.get("confidence", "medium"),
             "event_type": p.get("event_type", "default"),
+            "recurrence": str(p.get("recurrence", "")),
             "source_email_id": "",
-            "source_subject": file.filename or "PDF",
+            "source_subject": source_label,
         })
 
     return {
         "proposals": normalized,
-        "filename": file.filename,
-        "page_count": len(text_pages),
         "engine_used": selected_engine,
         "model_used": model,
         "parse_error": parse_error,
         "ai_raw_preview": response[:500] if not normalized else None,
     }
+
+
+@router.post("/calendar/extract-events-from-excel")
+async def extract_events_from_excel(
+    file: UploadFile = File(...),
+    engine: str = "gemini",
+):
+    """Extract calendar candidates from an uploaded Excel (.xlsx) — supports timetables (時間割)."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise HTTPException(status_code=500, detail="openpyxl not available")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="empty file")
+
+    try:
+        wb = load_workbook(io.BytesIO(contents), data_only=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Excel parse failed: {e}")
+
+    sheets_text = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) if c is not None else "" for c in row]
+            if any(c.strip() for c in cells):
+                rows.append(" | ".join(cells))
+        if rows:
+            sheets_text.append(f"### Sheet: {sheet_name}\n" + "\n".join(rows))
+    full_text = "\n\n".join(sheets_text)
+
+    if not full_text.strip():
+        return {
+            "proposals": [],
+            "parse_error": "Excel から内容を抽出できませんでした",
+            "filename": file.filename,
+            "sheet_count": len(wb.sheetnames),
+        }
+
+    result = _extract_with_ai(full_text, file.filename or "uploaded.xlsx", engine)
+    result["filename"] = file.filename
+    result["sheet_count"] = len(wb.sheetnames)
+    return result
+
+
+@router.post("/calendar/extract-events-from-pdf")
+async def extract_events_from_pdf(
+    file: UploadFile = File(...),
+    engine: str = "gemini",
+):
+    """Extract calendar candidates from an uploaded PDF (日程表・年間予定表 etc.)."""
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PyPDF2 not available")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="empty file")
+
+    try:
+        reader = PdfReader(io.BytesIO(contents))
+        text_pages = []
+        for p in reader.pages:
+            try:
+                text_pages.append(p.extract_text() or "")
+            except Exception:
+                text_pages.append("")
+        full_text = "\n\n---PAGE---\n\n".join(text_pages)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+
+    if not full_text.strip():
+        return {
+            "proposals": [],
+            "parse_error": "PDF からテキストを抽出できませんでした（画像のみ・スキャンPDF の可能性）",
+            "filename": file.filename,
+            "page_count": len(text_pages),
+        }
+
+    result = _extract_with_ai(full_text, file.filename or "uploaded.pdf", engine)
+    result["filename"] = file.filename
+    result["page_count"] = len(text_pages)
+    return result
 
 
 @router.get("/calendar/upcoming")
@@ -424,11 +471,12 @@ class CreateEventRequest(BaseModel):
     description: str = ""
     location: str = ""
     event_type: str | None = None  # meeting/committee/deadline/default; auto-detect if None
+    recurrence: str = ""  # RRULE body, e.g. "FREQ=WEEKLY;UNTIL=20260801T235959Z"
 
 
 @router.post("/calendar/create-event")
 def create_event(req: CreateEventRequest):
-    """Create a Google Calendar event with type-aware reminders."""
+    """Create a Google Calendar event with type-aware reminders and optional recurrence."""
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
     try:
@@ -439,6 +487,7 @@ def create_event(req: CreateEventRequest):
             description=req.description,
             location=req.location,
             event_type=req.event_type,
+            recurrence=req.recurrence or None,
         )
         return {
             "id": result.get("id", ""),

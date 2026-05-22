@@ -12,6 +12,7 @@ type Proposal = {
   location: string;
   confidence: "high" | "medium" | "low";
   event_type: EventType;
+  recurrence?: string;
   source_email_id: string;
   source_subject: string;
 };
@@ -67,9 +68,24 @@ export default function GmailSyncPage() {
   const [created, setCreated] = useState<Record<number, { ok: boolean; link?: string; err?: string }>>({});
   const [days, setDays] = useState(3);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [mode, setMode] = useState<"gmail" | "pdf">("gmail");
+  const [mode, setMode] = useState<"gmail" | "pdf" | "excel" | "manual">("gmail");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfMeta, setPdfMeta] = useState<{ filename: string; pageCount: number } | null>(null);
+  const [xlsxFile, setXlsxFile] = useState<File | null>(null);
+  const [xlsxMeta, setXlsxMeta] = useState<{ filename: string; sheetCount: number } | null>(null);
+  const [manual, setManual] = useState({
+    title: "",
+    date: new Date().toISOString().slice(0, 10),
+    startTime: "09:00",
+    endTime: "10:00",
+    allDay: false,
+    location: "",
+    description: "",
+    event_type: "default" as EventType,
+    recurrence: "" as "" | "weekly",
+    recurrenceUntil: "",
+  });
+  const [manualStatus, setManualStatus] = useState<null | { ok: boolean; msg: string; link?: string }>(null);
 
   // Direct Railway URL (env-driven). Avoids Vercel proxy 30s timeout.
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
@@ -181,6 +197,83 @@ export default function GmailSyncPage() {
     }
   };
 
+  const handleExtractExcel = async () => {
+    if (!xlsxFile) {
+      setError("Excel ファイルを選んでください");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setProposals([]);
+    setCreated({});
+    setXlsxMeta(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", xlsxFile);
+      const res = await fetch(`${apiBase}/api/calendar/extract-events-from-excel?engine=gemini`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      setProposals(data.proposals || []);
+      setXlsxMeta({ filename: data.filename, sheetCount: data.sheet_count });
+      setMeta({ scanned: data.sheet_count || 0, engine: data.engine_used || "gemini", model: data.model_used || "—" });
+      if (data.parse_error && (data.proposals || []).length === 0) setError(data.parse_error);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleManualSubmit = async () => {
+    setManualStatus(null);
+    if (!manual.title.trim()) {
+      setManualStatus({ ok: false, msg: "タイトルを入力してください" });
+      return;
+    }
+    setLoading(true);
+    try {
+      const start_iso = manual.allDay
+        ? manual.date
+        : `${manual.date}T${manual.startTime}:00+09:00`;
+      const end_iso = manual.allDay
+        ? manual.date
+        : `${manual.date}T${manual.endTime}:00+09:00`;
+      let recurrence = "";
+      if (manual.recurrence === "weekly") {
+        if (manual.recurrenceUntil) {
+          const untilDate = manual.recurrenceUntil.replace(/-/g, "");
+          recurrence = `FREQ=WEEKLY;UNTIL=${untilDate}T235959Z`;
+        } else {
+          recurrence = "FREQ=WEEKLY";
+        }
+      }
+      const res = await fetch(`${apiBase}/api/calendar/create-event`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: manual.title,
+          start_iso,
+          end_iso,
+          description: manual.description,
+          location: manual.location,
+          event_type: manual.event_type,
+          recurrence,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      setManualStatus({ ok: true, msg: "Calendar に追加しました", link: data.html_link });
+      setManual((m) => ({ ...m, title: "", description: "", location: "" }));
+    } catch (e) {
+      setManualStatus({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleExtractPdf = async () => {
     if (!pdfFile) {
       setError("PDF ファイルを選んでください");
@@ -225,6 +318,7 @@ export default function GmailSyncPage() {
           description: p.description,
           location: p.location,
           event_type: p.event_type,
+          recurrence: p.recurrence || "",
         }),
       });
       if (!res.ok) {
@@ -303,8 +397,13 @@ export default function GmailSyncPage() {
                 style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
               >
                 {/* Mode tabs */}
-                <div className="flex gap-2 mb-5">
-                  {(["gmail", "pdf"] as const).map((m) => (
+                <div className="flex gap-2 mb-5 flex-wrap">
+                  {([
+                    ["gmail", "📧 Gmail"],
+                    ["pdf", "📄 PDF"],
+                    ["excel", "📊 Excel (時間割)"],
+                    ["manual", "✍ 手動入力"],
+                  ] as const).map(([m, label]) => (
                     <button
                       key={m}
                       onClick={() => {
@@ -313,6 +412,8 @@ export default function GmailSyncPage() {
                         setError(null);
                         setMeta(null);
                         setPdfMeta(null);
+                        setXlsxMeta(null);
+                        setManualStatus(null);
                       }}
                       disabled={loading}
                       className="px-4 py-1.5 rounded-full text-sm font-medium transition-all"
@@ -322,7 +423,7 @@ export default function GmailSyncPage() {
                         border: `1px solid ${mode === m ? "var(--color-accent)" : "var(--color-border)"}`,
                       }}
                     >
-                      {m === "gmail" ? "📧 Gmail" : "📄 PDF"}
+                      {label}
                     </button>
                   ))}
                 </div>
@@ -354,6 +455,163 @@ export default function GmailSyncPage() {
                         {pdfMeta.filename} ({pdfMeta.pageCount} ページ)
                       </div>
                     )}
+                  </div>
+                )}
+
+                {mode === "excel" && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      onChange={(e) => setXlsxFile(e.target.files?.[0] ?? null)}
+                      disabled={loading}
+                      className="text-sm"
+                      style={{ color: "var(--color-text-muted)" }}
+                    />
+                    <button
+                      onClick={handleExtractExcel}
+                      disabled={loading || !xlsxFile}
+                      className="ml-auto px-5 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+                      style={{
+                        background: "var(--color-accent)",
+                        color: "white",
+                        boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
+                      }}
+                    >
+                      {loading ? "解析中..." : "Excel を解析"}
+                    </button>
+                    {xlsxMeta && (
+                      <div className="w-full mt-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                        {xlsxMeta.filename} ({xlsxMeta.sheetCount} シート)
+                      </div>
+                    )}
+                    <div className="w-full text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      時間割は週次繰り返し（学期末まで）として登録されます
+                    </div>
+                  </div>
+                )}
+
+                {mode === "manual" && (
+                  <div className="space-y-3">
+                    <input
+                      type="text"
+                      placeholder="タイトル（例: ゼミ、健診、書類提出）"
+                      value={manual.title}
+                      onChange={(e) => setManual({ ...manual, title: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg text-sm"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <input
+                        type="date"
+                        value={manual.date}
+                        onChange={(e) => setManual({ ...manual, date: e.target.value })}
+                        className="px-3 py-2 rounded-lg text-sm"
+                        style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                      />
+                      <label className="flex items-center gap-1.5 text-sm" style={{ color: "var(--color-text-muted)" }}>
+                        <input
+                          type="checkbox"
+                          checked={manual.allDay}
+                          onChange={(e) => setManual({ ...manual, allDay: e.target.checked })}
+                        />
+                        終日
+                      </label>
+                      {!manual.allDay && (
+                        <>
+                          <input
+                            type="time"
+                            value={manual.startTime}
+                            onChange={(e) => setManual({ ...manual, startTime: e.target.value })}
+                            className="px-3 py-2 rounded-lg text-sm"
+                            style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                          />
+                          <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>〜</span>
+                          <input
+                            type="time"
+                            value={manual.endTime}
+                            onChange={(e) => setManual({ ...manual, endTime: e.target.value })}
+                            className="px-3 py-2 rounded-lg text-sm"
+                            style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                          />
+                        </>
+                      )}
+                    </div>
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <select
+                        value={manual.event_type}
+                        onChange={(e) => setManual({ ...manual, event_type: e.target.value as EventType })}
+                        className="px-3 py-2 rounded-lg text-sm"
+                        style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                      >
+                        <option value="default">📅 予定（15分前）</option>
+                        <option value="meeting">👥 会議（30分前 / 1日前）</option>
+                        <option value="committee">🏛 委員会（1時間前 / 1日前メール）</option>
+                        <option value="deadline">⏰ 締切（1日前 / 3日前 / 1週間前メール）</option>
+                      </select>
+                      <select
+                        value={manual.recurrence}
+                        onChange={(e) => setManual({ ...manual, recurrence: e.target.value as "" | "weekly" })}
+                        className="px-3 py-2 rounded-lg text-sm"
+                        style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                      >
+                        <option value="">繰り返しなし</option>
+                        <option value="weekly">毎週</option>
+                      </select>
+                      {manual.recurrence === "weekly" && (
+                        <input
+                          type="date"
+                          value={manual.recurrenceUntil}
+                          onChange={(e) => setManual({ ...manual, recurrenceUntil: e.target.value })}
+                          placeholder="終了日（省略可）"
+                          className="px-3 py-2 rounded-lg text-sm"
+                          style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                        />
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="場所（任意）"
+                      value={manual.location}
+                      onChange={(e) => setManual({ ...manual, location: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg text-sm"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                    <textarea
+                      placeholder="メモ（任意）"
+                      value={manual.description}
+                      onChange={(e) => setManual({ ...manual, description: e.target.value })}
+                      rows={2}
+                      className="w-full px-3 py-2 rounded-lg text-sm resize-none"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleManualSubmit}
+                        disabled={loading || !manual.title.trim()}
+                        className="px-5 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+                        style={{
+                          background: "var(--color-accent)",
+                          color: "white",
+                          boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
+                        }}
+                      >
+                        {loading ? "追加中..." : "Calendar に追加"}
+                      </button>
+                      {manualStatus && (
+                        <span
+                          className="text-sm"
+                          style={{ color: manualStatus.ok ? "var(--color-green)" : "var(--color-red)" }}
+                        >
+                          {manualStatus.ok ? "✓ " : "✗ "}{manualStatus.msg}
+                          {manualStatus.link && (
+                            <a href={manualStatus.link} target="_blank" rel="noreferrer" className="ml-2 underline">
+                              Calendarで見る
+                            </a>
+                          )}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -481,6 +739,14 @@ export default function GmailSyncPage() {
                               <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                                 {formatDateTime(p.start_iso)}
                               </span>
+                              {p.recurrence && (
+                                <span
+                                  className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+                                  style={{ background: "rgba(168, 85, 247, 0.12)", color: "#a855f7" }}
+                                >
+                                  🔁 繰り返し
+                                </span>
+                              )}
                             </div>
                             <h3 className="font-semibold text-base">{p.title}</h3>
                             {p.location && (

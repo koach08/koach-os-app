@@ -243,10 +243,12 @@ def create_event(
     location: str = "",
     timezone: str = "Asia/Tokyo",
     event_type: str | None = None,
+    recurrence: str | None = None,
 ) -> dict:
-    """Create a calendar event with type-aware reminders.
+    """Create a calendar event with type-aware reminders and optional weekly recurrence.
 
     event_type: meeting / committee / deadline / default / None (auto-detect).
+    recurrence: RRULE body without the "RRULE:" prefix (e.g. "FREQ=WEEKLY;UNTIL=20260801T235959Z").
     """
     service = _get_service()
 
@@ -271,6 +273,12 @@ def create_event(
             "location": location,
             "reminders": {"useDefault": False, "overrides": reminders},
         }
+
+    if recurrence:
+        rrule = recurrence.strip()
+        if not rrule.upper().startswith("RRULE:"):
+            rrule = "RRULE:" + rrule
+        body["recurrence"] = [rrule]
 
     result = service.events().insert(calendarId="primary", body=body).execute()
     result["_event_type_used"] = resolved_type

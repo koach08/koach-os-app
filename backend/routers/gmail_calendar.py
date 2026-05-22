@@ -5,6 +5,7 @@ POST /api/calendar/create-event — create a calendar event
 POST /api/gmail/auto-sync — full pipeline: fetch → extract → return proposals
 """
 
+import asyncio
 import json
 import re
 from fastapi import APIRouter, HTTPException, Query
@@ -69,30 +70,11 @@ class EventProposal(BaseModel):
     source_subject: str = ""
 
 
-@router.post("/gmail/extract-events")
-def extract_events(req: ExtractRequest):
-    """Use Gemini (or other engine) to extract event candidates from recent emails."""
-    if not is_configured():
-        raise HTTPException(status_code=400, detail="Google integration not configured")
+BATCH_SIZE = 15  # emails per AI call — keeps each call under ~30s
 
-    try:
-        emails = list_recent_emails_all_accounts(days=req.days, max_results=req.limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
 
-    if not emails:
-        return {"proposals": [], "emails_scanned": 0}
-
-    # Build prompt for the AI (include account slot for traceability)
-    emails_text = "\n\n---EMAIL---\n".join(
-        f"ID: {e['id']} (account {e.get('_account_slot', 1)})\nFrom: {e['from']}\nSubject: {e['subject']}\nDate: {e['date']}\n\n{e['body'] or e['snippet']}"
-        for e in emails
-    )
-
-    # Current date for context (helps avoid mis-classifying recent past as old)
-    today_str = now_jst().strftime("%Y-%m-%d (%A)")
-
-    system_prompt = f"""You extract calendar event candidates and reminders from emails.
+def _build_system_prompt(today_str: str) -> str:
+    return f"""You extract calendar event candidates and reminders from emails.
 
 TODAY IS: {today_str}
 
@@ -126,10 +108,14 @@ Output rules:
 
 Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
 
-    user_msg = f"Extract calendar events from these emails:\n\n{emails_text}"
 
-    engine = req.engine if req.engine in DEFAULT_MODELS else "gemini"
-    model = req.model or DEFAULT_MODELS.get(engine, DEFAULT_MODELS["gemini"])
+def _process_batch(batch_emails: list, system_prompt: str, engine: str, model: str) -> tuple[list, str | None, str | None]:
+    """Synchronous batch processor — runs in thread pool. Returns (normalized_proposals, parse_error, raw_preview)."""
+    emails_text = "\n\n---EMAIL---\n".join(
+        f"ID: {e['id']} (account {e.get('_account_slot', 1)})\nFrom: {e['from']}\nSubject: {e['subject']}\nDate: {e['date']}\n\n{e['body'] or e['snippet']}"
+        for e in batch_emails
+    )
+    user_msg = f"Extract calendar events from these emails:\n\n{emails_text}"
 
     try:
         response = call_ai(
@@ -140,15 +126,13 @@ Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
             max_tokens=8000,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {e}")
+        return [], f"AI call failed: {e}", None
 
-    # Parse JSON (be tolerant of markdown code fences)
     cleaned = response.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    # Sometimes AI wraps JSON in extra text — find first [ and last ]
     if not cleaned.startswith("["):
         first = cleaned.find("[")
         last = cleaned.rfind("]")
@@ -164,7 +148,6 @@ Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
         proposals = []
         parse_error = str(e)
 
-    # Normalize each proposal
     normalized = []
     for p in proposals:
         if not isinstance(p, dict):
@@ -181,13 +164,67 @@ Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
             "source_subject": str(p.get("source_subject", ""))[:200],
         })
 
+    raw_preview = response[:500] if not normalized else None
+    return normalized, parse_error, raw_preview
+
+
+@router.post("/gmail/extract-events")
+async def extract_events(req: ExtractRequest):
+    """Use Gemini (or other engine) to extract event candidates from recent emails. Batches in parallel for long ranges."""
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+
+    try:
+        emails = list_recent_emails_all_accounts(days=req.days, max_results=req.limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
+
+    if not emails:
+        return {"proposals": [], "emails_scanned": 0}
+
+    today_str = now_jst().strftime("%Y-%m-%d (%A)")
+    system_prompt = _build_system_prompt(today_str)
+
+    engine = req.engine if req.engine in DEFAULT_MODELS else "gemini"
+    model = req.model or DEFAULT_MODELS.get(engine, DEFAULT_MODELS["gemini"])
+
+    batches = [emails[i:i + BATCH_SIZE] for i in range(0, len(emails), BATCH_SIZE)]
+
+    loop = asyncio.get_event_loop()
+    results = await asyncio.gather(*[
+        loop.run_in_executor(None, _process_batch, b, system_prompt, engine, model)
+        for b in batches
+    ])
+
+    all_proposals: list = []
+    parse_errors: list[str] = []
+    raw_previews: list[str] = []
+    for props, err, preview in results:
+        all_proposals.extend(props)
+        if err:
+            parse_errors.append(err)
+        if preview:
+            raw_previews.append(preview)
+
+    # Deduplicate by (title, start_iso) — same event mentioned in multiple emails
+    seen = set()
+    deduped = []
+    for p in all_proposals:
+        key = (p["title"], p["start_iso"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+
     return {
-        "proposals": normalized,
+        "proposals": deduped,
         "emails_scanned": len(emails),
+        "batches": len(batches),
+        "batch_size": BATCH_SIZE,
         "engine_used": engine,
         "model_used": model,
-        "ai_raw_preview": response[:500] if not normalized else None,
-        "parse_error": parse_error,
+        "ai_raw_preview": raw_previews[0] if raw_previews and not deduped else None,
+        "parse_error": "; ".join(parse_errors) if parse_errors else None,
     }
 
 

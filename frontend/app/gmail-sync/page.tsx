@@ -73,6 +73,8 @@ export default function GmailSyncPage() {
   const [pdfMeta, setPdfMeta] = useState<{ filename: string; pageCount: number } | null>(null);
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
   const [xlsxMeta, setXlsxMeta] = useState<{ filename: string; sheetCount: number } | null>(null);
+  const [debugInfo, setDebugInfo] = useState<{ text_preview?: string; text_length?: number; ai_raw_preview?: string; parse_error?: string } | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
   const [manual, setManual] = useState({
     title: "",
     date: new Date().toISOString().slice(0, 10),
@@ -296,6 +298,12 @@ export default function GmailSyncPage() {
       setProposals(data.proposals || []);
       setPdfMeta({ filename: data.filename, pageCount: data.page_count });
       setMeta({ scanned: data.page_count || 0, engine: data.engine_used || "gemini", model: data.model_used || "—" });
+      setDebugInfo({
+        text_preview: data.text_preview,
+        text_length: data.text_length,
+        ai_raw_preview: data.ai_raw_preview,
+        parse_error: data.parse_error,
+      });
       if (data.parse_error && (data.proposals || []).length === 0) {
         setError(data.parse_error);
       }
@@ -452,7 +460,50 @@ export default function GmailSyncPage() {
                     </button>
                     {pdfMeta && (
                       <div className="w-full mt-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                        {pdfMeta.filename} ({pdfMeta.pageCount} ページ)
+                        {pdfMeta.filename} ({pdfMeta.pageCount} ページ
+                        {debugInfo?.text_length ? ` / ${debugInfo.text_length.toLocaleString()} 文字抽出` : ""}
+                        )
+                      </div>
+                    )}
+                    {debugInfo && (debugInfo.text_preview || debugInfo.ai_raw_preview) && (
+                      <div className="w-full mt-2">
+                        <button
+                          onClick={() => setShowDebug((s) => !s)}
+                          className="text-xs underline"
+                          style={{ color: "var(--color-text-muted)" }}
+                        >
+                          {showDebug ? "詳細を隠す" : "📋 PDF テキスト / AI 応答を確認"}
+                        </button>
+                        {showDebug && (
+                          <div className="mt-2 space-y-2">
+                            {debugInfo.text_preview && (
+                              <div>
+                                <div className="text-[11px] mb-1" style={{ color: "var(--color-text-muted)" }}>
+                                  PDF テキスト (最初の 3000 字)
+                                </div>
+                                <pre
+                                  className="text-[11px] p-3 rounded-lg overflow-auto max-h-60 whitespace-pre-wrap"
+                                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}
+                                >
+                                  {debugInfo.text_preview}
+                                </pre>
+                              </div>
+                            )}
+                            {debugInfo.ai_raw_preview && (
+                              <div>
+                                <div className="text-[11px] mb-1" style={{ color: "var(--color-text-muted)" }}>
+                                  AI 応答 (proposals=0 のとき): {debugInfo.parse_error ?? ""}
+                                </div>
+                                <pre
+                                  className="text-[11px] p-3 rounded-lg overflow-auto max-h-60 whitespace-pre-wrap"
+                                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}
+                                >
+                                  {debugInfo.ai_raw_preview}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

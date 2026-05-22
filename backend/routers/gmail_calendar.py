@@ -285,8 +285,10 @@ The text comes from a PDF/Excel — may contain table-formatted dates, semester 
 
 Items to extract:
 - All meetings, classes, exams, committees, deadlines with dates/times
+- 大学関連: 教授会・研究科会議・学科会議・学部会議・研究会・FD・SD・入試業務・採点会議・卒論審査・教務委員会・人事委員会・予算委員会・各種ワーキンググループ etc.
 - All-day events if no time specified
 - Weekly recurring classes (timetable/時間割): include `recurrence` with the RRULE-compatible info
+- Be GENEROUS — include anything resembling a scheduled gathering, even if labeled vaguely (例: ○○について、説明会、報告会、懇談会)
 
 Output rules:
 - Output ONLY a JSON array. No markdown, no commentary.
@@ -444,11 +446,15 @@ async def extract_events_from_pdf(
             "parse_error": "PDF からテキストを抽出できませんでした（画像のみ・スキャンPDF の可能性）",
             "filename": file.filename,
             "page_count": len(text_pages),
+            "text_preview": "",
+            "text_length": 0,
         }
 
     result = _extract_with_ai(full_text, file.filename or "uploaded.pdf", engine)
     result["filename"] = file.filename
     result["page_count"] = len(text_pages)
+    result["text_preview"] = full_text[:3000]
+    result["text_length"] = len(full_text)
     return result
 
 

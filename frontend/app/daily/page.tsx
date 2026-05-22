@@ -24,6 +24,8 @@ type Failure = {
 type DailyBrief = {
   generated_at: string;
   schedule: Event[];
+  schedule_tomorrow?: Event[];
+  schedule_week?: (Event & { event_type?: string })[];
   gcal_status: "ok" | "not_configured";
   decisions: Decision[];
   topics: string[];
@@ -293,6 +295,88 @@ export default function DailyPage() {
                   </ul>
                 </SectionCard>
 
+                <SectionCard
+                  emoji="🌅"
+                  title="明日の予定"
+                  count={(data.schedule_tomorrow ?? []).length}
+                  empty={data.gcal_status === "not_configured" ? "未連携" : "予定なし"}
+                  isEmpty={(data.schedule_tomorrow ?? []).length === 0}
+                >
+                  <ul className="space-y-3">
+                    {(data.schedule_tomorrow ?? []).map((ev, i) => (
+                      <li key={i} className="flex gap-3">
+                        <div
+                          className="font-mono text-xs pt-1 shrink-0 px-2.5 py-1 rounded-md"
+                          style={{
+                            background: "var(--color-surface-hover)",
+                            color: "var(--color-text-muted)",
+                            minWidth: "3.5rem",
+                            textAlign: "center",
+                          }}
+                        >
+                          {formatTime(ev.start)}
+                        </div>
+                        <div className="flex-1 pt-0.5">
+                          <div className="text-sm font-medium">{ev.title}</div>
+                          {ev.location && (
+                            <div className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                              📍 {ev.location}
+                            </div>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </SectionCard>
+              </div>
+
+              {/* 今週 (7日) */}
+              <SectionCard
+                emoji="📆"
+                title="今週の予定"
+                count={(data.schedule_week ?? []).length}
+                empty={data.gcal_status === "not_configured" ? "Google Calendar 未連携" : "予定なし"}
+                isEmpty={(data.schedule_week ?? []).length === 0}
+              >
+                <ul className="space-y-2">
+                  {(data.schedule_week ?? []).map((ev, i) => {
+                    const d = new Date(ev.start);
+                    const label = d.toLocaleString("ja-JP", {
+                      month: "numeric",
+                      day: "numeric",
+                      weekday: "short",
+                    });
+                    const typeColors: Record<string, string> = {
+                      meeting: "#3b82f6",
+                      committee: "#a855f7",
+                      deadline: "#ef4444",
+                      default: "#71717a",
+                    };
+                    const color = typeColors[ev.event_type ?? "default"];
+                    return (
+                      <li key={i} className="flex gap-3 items-center">
+                        <div
+                          className="font-mono text-[11px] shrink-0 px-2 py-0.5 rounded"
+                          style={{ background: `${color}20`, color, minWidth: "4.5rem", textAlign: "center" }}
+                        >
+                          {label}
+                        </div>
+                        <div className="font-mono text-xs" style={{ color: "var(--color-text-muted)", minWidth: "3rem" }}>
+                          {formatTime(ev.start)}
+                        </div>
+                        <div className="flex-1 text-sm">{ev.title}</div>
+                        {ev.location && (
+                          <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                            📍 {ev.location}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </SectionCard>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <SectionCard
                   emoji="🧭"
                   title="直近の決定"

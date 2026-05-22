@@ -139,13 +139,34 @@ def daily_brief(
     """
     now = now_jst()
 
-    # 1. Gcal 今日の予定
+    # 1. Gcal 予定（今日 / 明日 / 今週）
     if is_configured():
         events_raw = get_events(days_ahead=0)
         schedule = [_format_event(ev) for ev in events_raw]
+        tomorrow_raw = get_events(days_ahead=1)
+        schedule_tomorrow = [_format_event(ev) for ev in tomorrow_raw]
+        # 今週分（今日含む7日）
+        try:
+            from gcal import list_upcoming_events
+            week_raw = list_upcoming_events(days_ahead=7)
+            schedule_week = [
+                {
+                    "title": ev["title"],
+                    "start": ev["start_iso"],
+                    "end": ev["end_iso"],
+                    "location": ev["location"],
+                    "all_day": ev["all_day"],
+                    "event_type": ev["event_type"],
+                }
+                for ev in week_raw
+            ]
+        except Exception:
+            schedule_week = []
         gcal_status = "ok"
     else:
         schedule = []
+        schedule_tomorrow = []
+        schedule_week = []
         gcal_status = "not_configured"
 
     # 2. 直近の決定ログ
@@ -226,6 +247,8 @@ def daily_brief(
     return {
         "generated_at": now.isoformat(),
         "schedule": schedule,
+        "schedule_tomorrow": schedule_tomorrow,
+        "schedule_week": schedule_week,
         "gcal_status": gcal_status,
         "decisions": decisions,
         "topics": topics,

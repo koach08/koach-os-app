@@ -278,7 +278,9 @@ def create_event(
 
 
 def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:
-    """Fetch recent emails from a single slot. Returns list of dicts."""
+    """Fetch recent emails from a single slot. Returns list of dicts. Message fetches run in parallel."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     service = _get_gmail_service(slot)
     query = f"newer_than:{days}d -in:spam -in:trash"
 
@@ -287,17 +289,26 @@ def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> l
     ).execute()
     msg_refs = listing.get("messages", [])
 
-    emails = []
-    for ref in msg_refs:
+    def fetch_one(ref):
         try:
             msg = service.users().messages().get(
                 userId="me", id=ref["id"], format="full"
             ).execute()
             parsed = _parse_message(msg)
             parsed["_account_slot"] = slot
-            emails.append(parsed)
+            return parsed
         except Exception:
-            continue
+            return None
+
+    emails: list[dict] = []
+    if not msg_refs:
+        return emails
+    with ThreadPoolExecutor(max_workers=min(10, len(msg_refs))) as pool:
+        futures = [pool.submit(fetch_one, r) for r in msg_refs]
+        for f in as_completed(futures):
+            result = f.result()
+            if result:
+                emails.append(result)
     return emails
 
 

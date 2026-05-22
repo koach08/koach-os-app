@@ -278,9 +278,7 @@ def create_event(
 
 
 def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:
-    """Fetch recent emails from a single slot. Returns list of dicts. Message fetches run in parallel."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
+    """Fetch recent emails from a single slot. Uses Gmail batch API for speed."""
     service = _get_gmail_service(slot)
     query = f"newer_than:{days}d -in:spam -in:trash"
 
@@ -288,27 +286,38 @@ def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> l
         userId="me", q=query, maxResults=max_results
     ).execute()
     msg_refs = listing.get("messages", [])
+    if not msg_refs:
+        return []
 
-    def fetch_one(ref):
-        try:
-            msg = service.users().messages().get(
-                userId="me", id=ref["id"], format="full"
-            ).execute()
-            parsed = _parse_message(msg)
-            parsed["_account_slot"] = slot
-            return parsed
-        except Exception:
-            return None
+    # Batch API: send multiple messages.get in a single HTTP request. Max 100 per batch.
+    BATCH_LIMIT = 50  # keep batches small for reliability
+    results: dict[str, dict] = {}
+
+    def callback(request_id, response, exception):
+        if exception is None and response is not None:
+            results[request_id] = response
 
     emails: list[dict] = []
-    if not msg_refs:
-        return emails
-    with ThreadPoolExecutor(max_workers=min(10, len(msg_refs))) as pool:
-        futures = [pool.submit(fetch_one, r) for r in msg_refs]
-        for f in as_completed(futures):
-            result = f.result()
-            if result:
-                emails.append(result)
+    for chunk_start in range(0, len(msg_refs), BATCH_LIMIT):
+        chunk = msg_refs[chunk_start:chunk_start + BATCH_LIMIT]
+        batch = service.new_batch_http_request(callback=callback)
+        for i, ref in enumerate(chunk):
+            batch.add(
+                service.users().messages().get(userId="me", id=ref["id"], format="full"),
+                request_id=f"{chunk_start}_{i}",
+            )
+        try:
+            batch.execute()
+        except Exception:
+            continue
+
+    for rid, msg in results.items():
+        try:
+            parsed = _parse_message(msg)
+            parsed["_account_slot"] = slot
+            emails.append(parsed)
+        except Exception:
+            continue
     return emails
 
 

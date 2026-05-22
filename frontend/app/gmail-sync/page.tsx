@@ -101,10 +101,21 @@ export default function GmailSyncPage() {
         return;
       }
 
-      // Long range: fetch all emails, then process in chunks from the browser to avoid Railway proxy timeout
-      const recentRes = await fetch(`${apiBase}/api/gmail/recent?days=${days}&limit=${limit}`);
-      if (!recentRes.ok) throw new Error((await recentRes.text()) || `HTTP ${recentRes.status}`);
-      const { emails } = (await recentRes.json()) as { emails: any[]; count: number };
+      // Long range: fetch each account slot separately in parallel to avoid Railway proxy timeout
+      const slotsRes = await fetch(`${apiBase}/api/gmail/slots`);
+      const { slots } = (await slotsRes.json()) as { slots: number[] };
+      const perSlotLimit = Math.ceil(limit / Math.max(slots.length, 1));
+      const slotResults = await Promise.all(
+        slots.map(async (s) => {
+          const r = await fetch(
+            `${apiBase}/api/gmail/recent?days=${days}&limit=${perSlotLimit}&slot=${s}`
+          );
+          if (!r.ok) return [];
+          const d = (await r.json()) as { emails: any[] };
+          return d.emails || [];
+        })
+      );
+      const emails = slotResults.flat();
       if (!emails || emails.length === 0) {
         setMeta({ scanned: 0, engine: "gemini", model: "—" });
         return;

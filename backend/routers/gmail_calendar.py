@@ -30,15 +30,29 @@ def gmail_status():
 
 
 @router.get("/gmail/recent")
-def gmail_recent(days: int = Query(3, ge=1, le=365), limit: int = Query(20, ge=1, le=200)):
-    """Fetch recent emails."""
+def gmail_recent(
+    days: int = Query(3, ge=1, le=365),
+    limit: int = Query(20, ge=1, le=200),
+    slot: int = Query(0, ge=0, le=9),  # 0 = all configured slots, otherwise specific slot
+):
+    """Fetch recent emails. slot=0 fetches all accounts; slot=N fetches that account only."""
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
     try:
-        emails = list_recent_emails_all_accounts(days=days, max_results=limit)
+        if slot == 0:
+            emails = list_recent_emails_all_accounts(days=days, max_results=limit)
+        else:
+            emails = list_recent_emails(days=days, max_results=limit, slot=slot)
         return {"emails": emails, "count": len(emails)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
+
+
+@router.get("/gmail/slots")
+def gmail_slots():
+    """Return list of configured account slots so frontend can chunk fetches per-account."""
+    from gcal import _configured_slots
+    return {"slots": _configured_slots()}
 
 
 class ExtractRequest(BaseModel):

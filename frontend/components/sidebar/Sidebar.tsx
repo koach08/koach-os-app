@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { href: "/documents", label: "Docs→Tasks", icon: "📄" },
   { href: "/training", label: "Training", icon: "💪" },
   { href: "/", label: "Chat", icon: "💬" },
+  { href: "/private", label: "プライベート", icon: "🤫" },
   { href: "/analyze", label: "Style", icon: "✍️" },
   { href: "/logs", label: "Logs", icon: "📋" },
   { href: "/review", label: "Review", icon: "📊" },

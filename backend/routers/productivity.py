@@ -271,6 +271,119 @@ def generate_plan(req: PlanRequest):
     }
 
 
+class PlannedBlock(BaseModel):
+    """A single time-block to write into Google Calendar from Coach."""
+    title: str
+    start_iso: str
+    end_iso: str
+    category: Category = "other"
+    description: str = ""
+
+
+class CommitPlanRequest(BaseModel):
+    blocks: list[PlannedBlock]
+
+
+@router.post("/productivity/commit-plan")
+def commit_plan(req: CommitPlanRequest):
+    """Write a list of Coach-suggested time blocks into Google Calendar (event_type=default reminder)."""
+    try:
+        from gcal import is_configured, create_event
+    except Exception:
+        raise HTTPException(status_code=500, detail="gcal module unavailable")
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+
+    results: list[dict] = []
+    for blk in req.blocks:
+        try:
+            ev = create_event(
+                title=f"{CATEGORY_META.get(blk.category, ('✨',''))[0]} {blk.title}",
+                start_iso=blk.start_iso,
+                end_iso=blk.end_iso,
+                description=blk.description or f"[Koach Coach] category={blk.category}",
+                event_type="default",
+            )
+            results.append({"ok": True, "id": ev.get("id", ""), "html_link": ev.get("htmlLink", "")})
+        except Exception as e:
+            results.append({"ok": False, "error": str(e), "title": blk.title})
+    return {"count": len(results), "results": results}
+
+
+@router.post("/productivity/parse-plan")
+def parse_plan_to_blocks(payload: dict):
+    """Use AI to convert a free-form Coach plan text into structured blocks (for the commit UI)."""
+    plan_text = payload.get("plan", "")
+    if not plan_text:
+        raise HTTPException(status_code=400, detail="plan text required")
+
+    today_str = now_jst().strftime("%Y-%m-%d (%A)")
+    system_prompt = f"""You convert a Japanese productivity plan (with date sections and HH:MM-HH:MM time blocks) into structured JSON.
+
+TODAY IS: {today_str}
+
+Read the plan and output ONLY a JSON array of time blocks. Each block:
+{{"title": "...", "start_iso": "YYYY-MM-DDTHH:MM:00+09:00", "end_iso": "...", "category": "career|research|creative|family|health|learning|side_project|admin|rest|other", "description": ""}}
+
+Rules:
+- Skip blocks that are 既存の Calendar イベント（試験・固定予定など）— extract only NEW proposed blocks
+- Skip vague entries (例: 「自由時間」「家族時間」without specific task)
+- Skip "就寝準備" or pure rest blocks unless they have a specific actionable label
+- Keep tasks with clear titles (例: "科研費基盤C再申請の構成案", "ブレイクダンス練習")
+- Infer the date from section headers like "5/24 (日)"
+- Use Asia/Tokyo (+09:00) timezone
+- If a section has no specific HH:MM range, skip that entry
+
+Output: JSON array only, no markdown."""
+
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": f"以下の計画から時間ブロックを抽出してください:\n\n{plan_text}"}],
+            system=system_prompt,
+            engine="gemini",
+            model=DEFAULT_MODELS.get("gemini", "gemini-2.0-flash-exp"),
+            max_tokens=4000,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"parse failed: {e}")
+
+    # Reuse the same JSON repair from gmail_calendar
+    import re as _re
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = _re.sub(r"\s*```$", "", cleaned)
+    if not cleaned.startswith("["):
+        first = cleaned.find("[")
+        if first != -1:
+            cleaned = cleaned[first:]
+    try:
+        blocks = json.loads(cleaned)
+    except Exception:
+        try:
+            from backend.routers.gmail_calendar import _repair_truncated_json_array
+            repaired = _repair_truncated_json_array(cleaned)
+            blocks = json.loads(repaired) if repaired else []
+        except Exception:
+            blocks = []
+    if not isinstance(blocks, list):
+        blocks = []
+
+    # Normalize
+    out = []
+    for b in blocks:
+        if not isinstance(b, dict) or not b.get("title") or not b.get("start_iso"):
+            continue
+        out.append({
+            "title": str(b.get("title", ""))[:200],
+            "start_iso": str(b.get("start_iso", "")),
+            "end_iso": str(b.get("end_iso", "")) or str(b.get("start_iso", "")),
+            "category": b.get("category", "other"),
+            "description": str(b.get("description", ""))[:300],
+        })
+    return {"blocks": out}
+
+
 @router.get("/productivity/categories")
 def list_categories():
     return {

@@ -55,6 +55,12 @@ export default function CoachPage() {
   const [lifeBlocks, setLifeBlocks] = useState<LifeBlock[]>([]);
   const [plan, setPlan] = useState<string | null>(null);
   const [planMeta, setPlanMeta] = useState<{ calendar_events_count: number; backlog_count: number; engine_used: string } | null>(null);
+  type PlannedBlock = { title: string; start_iso: string; end_iso: string; category: Category; description: string };
+  const [blocks, setBlocks] = useState<PlannedBlock[]>([]);
+  const [selectedBlocks, setSelectedBlocks] = useState<Set<number>>(new Set());
+  const [parsingBlocks, setParsingBlocks] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [commitResult, setCommitResult] = useState<{ ok: number; failed: number } | null>(null);
   const [horizon, setHorizon] = useState(7);
   const [engine, setEngine] = useState("claude");
   const [generating, setGenerating] = useState(false);
@@ -133,6 +139,9 @@ export default function CoachPage() {
     setGenerating(true);
     setError(null);
     setPlan(null);
+    setBlocks([]);
+    setSelectedBlocks(new Set());
+    setCommitResult(null);
     try {
       const r = await fetch(`${apiBase}/api/productivity/plan`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -151,6 +160,59 @@ export default function CoachPage() {
     } finally {
       setGenerating(false);
     }
+  };
+
+  const parseBlocks = async () => {
+    if (!plan) return;
+    setParsingBlocks(true);
+    setError(null);
+    try {
+      const r = await fetch(`${apiBase}/api/productivity/parse-plan`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      const bs: PlannedBlock[] = d.blocks ?? [];
+      setBlocks(bs);
+      // pre-select all
+      setSelectedBlocks(new Set(bs.map((_, i) => i)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setParsingBlocks(false);
+    }
+  };
+
+  const commitBlocks = async () => {
+    const chosen = blocks.filter((_, i) => selectedBlocks.has(i));
+    if (chosen.length === 0) return;
+    setCommitting(true);
+    setError(null);
+    try {
+      const r = await fetch(`${apiBase}/api/productivity/commit-plan`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blocks: chosen }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      const ok = (d.results ?? []).filter((r: { ok: boolean }) => r.ok).length;
+      const failed = (d.results ?? []).length - ok;
+      setCommitResult({ ok, failed });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const toggleBlock = (i: number) => {
+    setSelectedBlocks((s) => {
+      const next = new Set(s);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
   };
 
   const catMeta = (id: Category) => CATEGORIES.find((c) => c.id === id) ?? CATEGORIES[CATEGORIES.length - 1];
@@ -353,10 +415,83 @@ export default function CoachPage() {
               </div>
             )}
             {plan && (
-              <pre className="text-sm whitespace-pre-wrap p-4 rounded-lg"
-                style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", lineHeight: 1.7 }}>
-                {plan}
-              </pre>
+              <>
+                <pre className="text-sm whitespace-pre-wrap p-4 rounded-lg"
+                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", lineHeight: 1.7 }}>
+                  {plan}
+                </pre>
+
+                <div className="mt-4 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={parseBlocks}
+                    disabled={parsingBlocks}
+                    className="px-4 py-2 rounded-full text-sm font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                  >
+                    {parsingBlocks ? "解析中…" : "📋 提案を Calendar 用ブロックに変換"}
+                  </button>
+                  {blocks.length > 0 && (
+                    <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {blocks.length} ブロック抽出 / {selectedBlocks.size} 件を Calendar に書き込み予定
+                    </span>
+                  )}
+                </div>
+
+                {blocks.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {blocks.map((b, i) => {
+                      const cm = catMeta(b.category);
+                      const sel = selectedBlocks.has(i);
+                      const start = new Date(b.start_iso);
+                      const end = new Date(b.end_iso);
+                      const dateLabel = start.toLocaleString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+                      return (
+                        <label
+                          key={i}
+                          className="flex items-center gap-3 p-2.5 rounded-lg cursor-pointer"
+                          style={{
+                            background: "var(--color-background)",
+                            border: `1px solid ${sel ? cm.color : "var(--color-border)"}`,
+                            borderLeft: `4px solid ${cm.color}`,
+                            opacity: sel ? 1 : 0.55,
+                          }}
+                        >
+                          <input type="checkbox" checked={sel} onChange={() => toggleBlock(i)} />
+                          <span className="text-xs font-mono shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                            {dateLabel}
+                          </span>
+                          <span className="text-xs font-mono shrink-0" style={{ color: "var(--color-text-muted)", minWidth: "5.5rem" }}>
+                            {start.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}-
+                            {end.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 rounded-full shrink-0" style={{ background: `${cm.color}25`, color: cm.color }}>
+                            {cm.emoji} {cm.label}
+                          </span>
+                          <span className="flex-1 text-sm">{b.title}</span>
+                        </label>
+                      );
+                    })}
+
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        onClick={commitBlocks}
+                        disabled={committing || selectedBlocks.size === 0}
+                        className="px-5 py-2 rounded-full text-sm font-medium disabled:opacity-50 hover:scale-[1.02] transition-all"
+                        style={{ background: "var(--color-accent)", color: "white", boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)" }}
+                      >
+                        {committing ? "書き込み中…" : `✅ ${selectedBlocks.size} 件を Google Calendar に書き込む`}
+                      </button>
+                      {commitResult && (
+                        <span className="text-sm" style={{ color: commitResult.failed === 0 ? "var(--color-green)" : "var(--color-red)" }}>
+                          {commitResult.failed === 0
+                            ? `✓ ${commitResult.ok} 件追加しました`
+                            : `${commitResult.ok} 件成功 / ${commitResult.failed} 件失敗`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

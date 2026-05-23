@@ -459,53 +459,18 @@ Return [] only if no dates can be identified."""
             system=system_prompt,
             engine=selected_engine,
             model=model,
-            max_tokens=8000,
+            max_tokens=8192,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI extraction failed: {e}")
 
-    cleaned = response.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    if not cleaned.startswith("["):
-        first = cleaned.find("[")
-        last = cleaned.rfind("]")
-        if first != -1 and last != -1 and last > first:
-            cleaned = cleaned[first:last + 1]
-
-    parse_error = None
-    try:
-        proposals = json.loads(cleaned)
-        if not isinstance(proposals, list):
-            proposals = []
-    except json.JSONDecodeError as e:
-        proposals = []
-        parse_error = str(e)
-
-    normalized = []
-    for p in proposals:
-        if not isinstance(p, dict):
-            continue
-        normalized.append({
-            "title": str(p.get("title", ""))[:200],
-            "start_iso": str(p.get("start_iso", "")),
-            "end_iso": str(p.get("end_iso", "")),
-            "description": str(p.get("description", ""))[:500],
-            "location": str(p.get("location", ""))[:200],
-            "confidence": p.get("confidence", "medium"),
-            "event_type": p.get("event_type", "default"),
-            "recurrence": str(p.get("recurrence", "")),
-            "source_email_id": "",
-            "source_subject": source_label,
-        })
-
+    normalized, parse_error = _parse_proposals_json(response, source_label)
     return {
         "proposals": normalized,
         "engine_used": selected_engine,
         "model_used": model,
         "parse_error": parse_error,
-        "ai_raw_preview": response[:500] if not normalized else None,
+        "ai_raw_preview": response[:1500] if not normalized else None,
     }
 
 
@@ -582,9 +547,38 @@ async def extract_events_from_pdf(
                     {"mime_type": "application/pdf", "data": contents},
                     prompt,
                 ],
-                generation_config={"max_output_tokens": 32000, "temperature": 0.2},
+                generation_config={"max_output_tokens": 8192, "temperature": 0.2},
             )
-            raw = resp.text if hasattr(resp, "text") else str(resp)
+            # Gemini may return empty if blocked/exceeded; access text defensively
+            raw = ""
+            try:
+                raw = resp.text or ""
+            except Exception:
+                # resp.text raises when no candidates; surface diagnostic
+                raw = ""
+            if not raw:
+                # Try to read from candidates / parts directly
+                try:
+                    parts = []
+                    for c in getattr(resp, "candidates", []) or []:
+                        for p in (getattr(c, "content", None) and c.content.parts) or []:
+                            if getattr(p, "text", None):
+                                parts.append(p.text)
+                    raw = "".join(parts)
+                except Exception:
+                    pass
+            if not raw:
+                # Surface the reason
+                pf = getattr(resp, "prompt_feedback", None)
+                finish_reasons = []
+                try:
+                    for c in getattr(resp, "candidates", []) or []:
+                        finish_reasons.append(str(getattr(c, "finish_reason", "")))
+                except Exception:
+                    pass
+                diag = f"empty Gemini response (prompt_feedback={pf}, finish_reasons={finish_reasons})"
+                # Fall through to PyPDF/pdfplumber text path below
+                raise RuntimeError(diag)
             normalized, parse_error = _parse_proposals_json(raw, file.filename or "PDF")
             return {
                 "proposals": normalized,

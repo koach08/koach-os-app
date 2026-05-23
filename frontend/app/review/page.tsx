@@ -13,9 +13,22 @@ interface Stats {
   period_days: number;
 }
 
+type WeeklyAi = {
+  review: string;
+  completion_count: number;
+  decision_count: number;
+  failure_count: number;
+  focus_minutes_total: number;
+  focus_by_category: Record<string, number>;
+  engine_used: string;
+  generated_at: string;
+};
+
 export default function ReviewPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [weekly, setWeekly] = useState<WeeklyAi | null>(null);
+  const [loadingAi, setLoadingAi] = useState(false);
 
   useEffect(() => {
     fetchJSON<Stats>("/api/review/stats?days=7").then(setStats).catch(() => {});
@@ -32,23 +45,79 @@ export default function ReviewPage() {
     }
   };
 
+  const generateWeekly = async () => {
+    setLoadingAi(true);
+    try {
+      const r = await fetch("/api/weekly-review?engine=claude");
+      if (r.ok) setWeekly(await r.json());
+    } finally {
+      setLoadingAi(false);
+    }
+  };
+
   const barWidth = (value: number, max: number) =>
     max > 0 ? `${Math.round((value / max) * 100)}%` : "0%";
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
           <h1 className="text-2xl font-bold">Weekly Review</h1>
-          <button
-            onClick={handleGenerate}
-            disabled={generating}
-            className="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{ background: "var(--color-accent)", color: "white" }}
-          >
-            {generating ? "Generating..." : "Generate Weekly Summary"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={generateWeekly}
+              disabled={loadingAi}
+              className="px-4 py-2 rounded-lg text-sm font-medium"
+              style={{ background: "#7c3aed", color: "white" }}
+            >
+              {loadingAi ? "生成中..." : "AI 週次レビュー"}
+            </button>
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={{ background: "var(--color-accent)", color: "white" }}
+            >
+              {generating ? "Generating..." : "対話統計を更新"}
+            </button>
+          </div>
         </div>
+
+        {weekly && (
+          <div
+            className="rounded-2xl p-6 mb-6"
+            style={{
+              background: "linear-gradient(135deg, rgba(124, 58, 237, 0.12) 0%, rgba(244, 114, 182, 0.06) 100%)",
+              border: "1px solid rgba(124, 58, 237, 0.25)",
+            }}
+          >
+            <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#a78bfa" }}>
+              今週の所見 ({weekly.engine_used})
+            </div>
+            <div className="text-[14px] whitespace-pre-wrap leading-[1.85]">{weekly.review}</div>
+            <div className="mt-4 flex gap-4 text-xs flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+              <span>完了 {weekly.completion_count}</span>
+              <span>決定 {weekly.decision_count}</span>
+              <span>失敗 {weekly.failure_count}</span>
+              <span>集中 {Math.floor(weekly.focus_minutes_total / 60)}h {weekly.focus_minutes_total % 60}m</span>
+            </div>
+            {Object.keys(weekly.focus_by_category).length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {Object.entries(weekly.focus_by_category)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([k, v]) => (
+                    <span
+                      key={k}
+                      className="text-[11px] px-2 py-0.5 rounded-full"
+                      style={{ background: "rgba(255,255,255,0.06)", color: "var(--color-text-muted)" }}
+                    >
+                      {k}: {v}分
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {stats && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

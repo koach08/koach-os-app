@@ -326,6 +326,66 @@ def delete_event(event_id: str) -> None:
     service.events().delete(calendarId="primary", eventId=event_id).execute()
 
 
+def _extra_calendar_ids() -> list[str]:
+    """EXTRA_CALENDAR_IDS env (comma-separated) — 妻 / 子供 / 共有 calendar の ID."""
+    import os
+    raw = os.environ.get("EXTRA_CALENDAR_IDS", "")
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def list_events_range_multi(start_date: str, end_date: str, calendar_ids: list[str] | None = None) -> list[dict]:
+    """指定された calendar 群から events を集めて1リストにする。重複 ID は最初のものを優先。"""
+    from datetime import datetime, timezone, timedelta
+    service = _get_service()
+    tz = timezone(timedelta(hours=9))
+    start_dt = datetime.fromisoformat(start_date).replace(tzinfo=tz)
+    end_dt = datetime.fromisoformat(end_date).replace(tzinfo=tz)
+    cal_ids = calendar_ids or (["primary"] + _extra_calendar_ids())
+    seen: set[str] = set()
+    out: list[dict] = []
+    for cid in cal_ids:
+        try:
+            events_result = service.events().list(
+                calendarId=cid,
+                timeMin=start_dt.astimezone(timezone.utc).isoformat(),
+                timeMax=end_dt.astimezone(timezone.utc).isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=500,
+            ).execute()
+        except Exception:
+            continue
+        for ev in events_result.get("items", []):
+            evid = ev.get("id", "")
+            if evid in seen:
+                continue
+            seen.add(evid)
+            start = ev.get("start", {})
+            end_ = ev.get("end", {})
+            out.append({
+                "id": evid,
+                "calendar_id": cid,
+                "title": ev.get("summary", "(無題)"),
+                "start_iso": start.get("dateTime") or start.get("date") or "",
+                "end_iso": end_.get("dateTime") or end_.get("date") or "",
+                "all_day": "date" in start,
+                "location": ev.get("location", ""),
+                "description": ev.get("description", ""),
+                "html_link": ev.get("htmlLink", ""),
+                "event_type": detect_event_type(ev.get("summary", ""), ev.get("description", "")),
+            })
+    out.sort(key=lambda e: e["start_iso"])
+    return out
+
+
+def list_family_events_range(start_date: str, end_date: str) -> list[dict]:
+    """EXTRA_CALENDAR_IDS で指定された家族 calendar の events のみ。"""
+    extras = _extra_calendar_ids()
+    if not extras:
+        return []
+    return list_events_range_multi(start_date, end_date, calendar_ids=extras)
+
+
 def list_upcoming_events(days_ahead: int = 7) -> list[dict]:
     """Read upcoming events from primary Google Calendar."""
     from datetime import datetime, timedelta, timezone

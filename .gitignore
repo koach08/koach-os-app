@@ -43,3 +43,4 @@ memory/
 
 # Junk files
 =*
+frontend/tsconfig.tsbuildinfo

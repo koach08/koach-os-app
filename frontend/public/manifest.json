@@ -1,0 +1,43 @@
+{
+  "name": "Koach OS v2",
+  "short_name": "Koach OS",
+  "description": "Structured Reflective AI Partner — personal productivity OS",
+  "start_url": "/daily",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "categories": ["productivity", "lifestyle"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Daily Brief", "url": "/daily", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Evening", "url": "/evening" },
+    { "name": "Focus", "url": "/focus" },
+    { "name": "AI 外注", "url": "/dispatcher" },
+    { "name": "過去に聞く", "url": "/ask" }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}

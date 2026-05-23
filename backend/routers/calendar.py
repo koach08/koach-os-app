@@ -32,6 +32,23 @@ def week_events():
     return {"events": get_week_events(), "configured": True}
 
 
+@router.get("/calendar/family")
+def family_events(days_ahead: int = 7):
+    """EXTRA_CALENDAR_IDS で指定された家族 calendar の予定。"""
+    if not is_configured():
+        return {"events": [], "configured": False}
+    from datetime import timedelta
+    from gcal import list_family_events_range, _extra_calendar_ids
+    now = now_jst()
+    start = now.strftime("%Y-%m-%d")
+    end = (now + timedelta(days=days_ahead + 1)).strftime("%Y-%m-%d")
+    return {
+        "events": list_family_events_range(start, end),
+        "configured": True,
+        "calendar_ids": _extra_calendar_ids(),
+    }
+
+
 @router.get("/calendar/briefing")
 def daily_briefing():
     """Generate an AI-powered daily briefing based on calendar + recent activity."""

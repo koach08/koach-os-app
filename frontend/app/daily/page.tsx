@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { VoiceCapture } from "@/components/VoiceCapture";
 
 type Event = {
   id?: string;
@@ -92,6 +93,12 @@ function formatGreeting(): string {
   return "こんばんは";
 }
 
+type BalanceWarning = { severity: string; category: string; message: string };
+type Balance = { warnings: BalanceWarning[]; calendar_minutes_by_category: Record<string, number> };
+type KpiMetric = { id: string; label: string; value: number; unit?: string; delta_7d?: number | null; category?: string };
+type FamilyEvent = { id: string; title: string; start_iso: string };
+type HealthHint = { hint: string; energy_band: string };
+
 export default function DailyPage() {
   const [data, setData] = useState<DailyBrief | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +106,10 @@ export default function DailyPage() {
   const [engine, setEngine] = useState<string>("claude");
   const [completedKeys, setCompletedKeys] = useState<Set<string>>(new Set());
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
+  const [balance, setBalance] = useState<Balance | null>(null);
+  const [kpiMetrics, setKpiMetrics] = useState<KpiMetric[]>([]);
+  const [family, setFamily] = useState<FamilyEvent[]>([]);
+  const [healthHint, setHealthHint] = useState<HealthHint | null>(null);
 
   const completionKey = (kind: "calendar" | "backlog", refId: string) =>
     `${kind}:${refId}`;
@@ -128,6 +139,10 @@ export default function DailyPage() {
 
   useEffect(() => {
     load("claude");
+    fetch("/api/balance?days=7").then((r) => r.ok ? r.json() : null).then((d) => d && setBalance(d)).catch(() => {});
+    fetch("/api/kpi").then((r) => r.ok ? r.json() : null).then((d) => d && setKpiMetrics((d.metrics ?? []).slice(0, 4))).catch(() => {});
+    fetch("/api/calendar/family?days_ahead=2").then((r) => r.ok ? r.json() : null).then((d) => d && setFamily(d.events ?? [])).catch(() => {});
+    fetch("/api/health-data/state-hint").then((r) => r.ok ? r.json() : null).then((d) => d && setHealthHint(d)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -184,7 +199,12 @@ export default function DailyPage() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto relative">
+      {/* Floating voice capture button */}
+      <div className="fixed bottom-6 right-6 z-40">
+        <VoiceCapture onSaved={() => load()} />
+      </div>
+
       {/* Hero header — full bleed gradient */}
       <div
         className="px-8 pt-12 pb-10 relative overflow-hidden"
@@ -240,6 +260,46 @@ export default function DailyPage() {
             )}
           </div>
 
+          {/* KPI mini strip */}
+          {kpiMetrics.length > 0 && (
+            <div className="mt-6 flex flex-wrap gap-2">
+              {kpiMetrics.map((m) => (
+                <div
+                  key={m.id}
+                  className="px-3 py-1.5 rounded-lg text-xs"
+                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--color-border)" }}
+                >
+                  <span style={{ color: "var(--color-text-muted)" }}>{m.label}</span>
+                  <span className="font-mono font-bold ml-2">{m.value.toLocaleString()}</span>
+                  <span className="ml-0.5" style={{ color: "var(--color-text-muted)" }}>{m.unit}</span>
+                  {m.delta_7d != null && (
+                    <span className="ml-2 font-mono" style={{ color: m.delta_7d >= 0 ? "#10b981" : "#ef4444" }}>
+                      {m.delta_7d >= 0 ? "▲" : "▼"} {Math.abs(m.delta_7d)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {healthHint?.hint && (
+            <div
+              className="mt-3 inline-block px-3 py-1.5 rounded-full text-xs"
+              style={{
+                background:
+                  healthHint.energy_band === "low"
+                    ? "rgba(239, 68, 68, 0.1)"
+                    : healthHint.energy_band === "high"
+                    ? "rgba(16, 185, 129, 0.1)"
+                    : "rgba(255, 255, 255, 0.04)",
+                color: healthHint.energy_band === "low" ? "#ef4444" : healthHint.energy_band === "high" ? "#10b981" : "var(--color-text-muted)",
+                border: "1px solid var(--color-border)",
+              }}
+            >
+              📊 {healthHint.hint}
+            </div>
+          )}
+
           {/* Engine selector pills */}
           <div className="mt-5 flex flex-wrap gap-2">
             {ENGINES.map((e) => {
@@ -289,6 +349,25 @@ export default function DailyPage() {
               <div className="h-32 rounded-2xl" style={{ background: "var(--color-surface)" }} />
               <div className="h-24 rounded-2xl" style={{ background: "var(--color-surface)" }} />
               <div className="h-24 rounded-2xl" style={{ background: "var(--color-surface)" }} />
+            </div>
+          )}
+
+          {balance && balance.warnings.length > 0 && (
+            <div className="space-y-2">
+              {balance.warnings.map((w, i) => (
+                <div
+                  key={i}
+                  className="p-3 rounded-xl text-sm flex items-start gap-3"
+                  style={{
+                    background: w.severity === "warn" ? "rgba(239, 68, 68, 0.08)" : "rgba(245, 158, 11, 0.08)",
+                    border: `1px solid ${w.severity === "warn" ? "rgba(239, 68, 68, 0.25)" : "rgba(245, 158, 11, 0.25)"}`,
+                    color: w.severity === "warn" ? "#ef4444" : "#f59e0b",
+                  }}
+                >
+                  <span>{w.severity === "warn" ? "⚠" : "ℹ"}</span>
+                  <span>{w.message}</span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -538,6 +617,38 @@ export default function DailyPage() {
                   </ul>
                 </SectionCard>
               </div>
+
+              {family.length > 0 && (
+                <SectionCard
+                  emoji="👨‍👩‍👧"
+                  title="家族カレンダー"
+                  count={family.length}
+                  empty=""
+                  isEmpty={false}
+                >
+                  <ul className="space-y-2">
+                    {family.slice(0, 8).map((ev) => {
+                      const d = new Date(ev.start_iso);
+                      const label = d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+                      const time = ev.start_iso.length > 10 ? ev.start_iso.slice(11, 16) : "終日";
+                      return (
+                        <li key={ev.id} className="flex gap-3 items-center text-sm">
+                          <span
+                            className="font-mono text-[11px] shrink-0 px-2 py-0.5 rounded"
+                            style={{ background: "rgba(244, 114, 182, 0.15)", color: "#f472b6", minWidth: "4.5rem", textAlign: "center" }}
+                          >
+                            {label}
+                          </span>
+                          <span className="font-mono text-xs" style={{ color: "var(--color-text-muted)", minWidth: "3rem" }}>
+                            {time}
+                          </span>
+                          <span className="flex-1">{ev.title}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </SectionCard>
+              )}
 
               {/* 今週 (7日) */}
               <SectionCard

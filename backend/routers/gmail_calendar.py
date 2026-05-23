@@ -50,6 +50,17 @@ def gmail_recent(
         raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
 
 
+def _raise_gcal_error(e: Exception, action: str):
+    """Map Google API errors to clearer HTTP responses."""
+    msg = str(e)
+    if "invalid_grant" in msg or "Token has been expired" in msg or "Token has been revoked" in msg:
+        raise HTTPException(
+            status_code=401,
+            detail="GOOGLE_TOKEN_EXPIRED: Google OAuth トークンが失効しました。ローカルで `python scripts/setup_gcal.py` を実行し、新しい token.json の base64 を Railway の GOOGLE_TOKEN_JSON_B64 に貼り直してください。",
+        )
+    raise HTTPException(status_code=500, detail=f"{action}: {e}")
+
+
 @router.get("/calendar/account")
 def calendar_account():
     """Return the email address whose primary calendar is being used."""
@@ -59,14 +70,15 @@ def calendar_account():
         from gcal import _get_service
         service = _get_service()
         about = service.calendarList().get(calendarId="primary").execute()
-        # Some accounts return the email in summary, others in id
         return {
             "calendar_id": about.get("id", ""),
             "summary": about.get("summary", ""),
             "timezone": about.get("timeZone", ""),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"calendar account lookup failed: {e}")
+        _raise_gcal_error(e, "calendar account lookup failed")
 
 
 @router.get("/gmail/slots")
@@ -662,8 +674,10 @@ def calendar_upcoming(days_ahead: int = Query(7, ge=1, le=180)):
     try:
         events = list_upcoming_events(days_ahead=days_ahead)
         return {"events": events, "count": len(events)}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calendar read failed: {e}")
+        _raise_gcal_error(e, "Calendar read failed")
 
 
 @router.get("/calendar/range")
@@ -675,8 +689,10 @@ def calendar_range(start: str = Query(...), end: str = Query(...)):
         from gcal import list_events_range
         events = list_events_range(start_date=start, end_date=end)
         return {"events": events, "count": len(events)}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calendar read failed: {e}")
+        _raise_gcal_error(e, "Calendar read failed")
 
 
 @router.delete("/calendar/event/{event_id}")

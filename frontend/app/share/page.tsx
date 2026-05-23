@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 /**
@@ -8,7 +8,7 @@ import { useSearchParams, useRouter } from "next/navigation";
  * iOS / Android で Safari の「共有 → Koach OS」から呼ばれる。
  * URL / title / text を組み合わせて memo or backlog に投げ込む。
  */
-export default function SharePage() {
+function ShareContent() {
   const params = useSearchParams();
   const router = useRouter();
   const [text, setText] = useState("");
@@ -100,5 +100,13 @@ export default function SharePage() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function SharePage() {
+  return (
+    <Suspense fallback={<div className="flex-1 p-6">読み込み中...</div>}>
+      <ShareContent />
+    </Suspense>
   );
 }

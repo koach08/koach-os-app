@@ -79,8 +79,15 @@ export default function CalendarPage() {
     setLoading(true);
     setError(null);
     fetch(`${apiBase}/api/calendar/range?start=${rangeStart}&end=${rangeEnd}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      .then(async (r) => {
+        if (!r.ok) {
+          let body: { detail?: string } | null = null;
+          try {
+            body = await r.json();
+          } catch {}
+          const detail = body?.detail ?? `HTTP ${r.status}`;
+          throw new Error(detail);
+        }
         return r.json();
       })
       .then((d) => {
@@ -96,6 +103,8 @@ export default function CalendarPage() {
       abort = true;
     };
   }, [apiBase, rangeStart, rangeEnd]);
+
+  const tokenExpired = error?.includes("GOOGLE_TOKEN_EXPIRED");
 
   const eventsByDay = useMemo(() => {
     const m: Record<string, Event[]> = {};
@@ -204,7 +213,25 @@ export default function CalendarPage() {
 
       <div className="px-8 pb-16">
         <div className="max-w-6xl mx-auto">
-          {error && (
+          {error && tokenExpired && (
+            <div
+              className="rounded-2xl p-4 mb-4"
+              style={{ background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)" }}
+            >
+              <div className="font-semibold mb-1" style={{ color: "#f59e0b" }}>
+                Google OAuth トークンが失効しました
+              </div>
+              <div className="text-sm mb-2" style={{ color: "var(--color-text)" }}>
+                Test users mode は 7 日でトークンが切れます。ローカルで再認証してください:
+              </div>
+              <pre className="text-xs p-2 rounded mb-2" style={{ background: "var(--color-background)", color: "var(--color-text-muted)" }}>
+{`python3 scripts/setup_gcal.py
+base64 -i token.json | pbcopy
+# Railway env の GOOGLE_TOKEN_JSON_B64 に貼り直し`}
+              </pre>
+            </div>
+          )}
+          {error && !tokenExpired && (
             <div
               className="rounded-2xl p-4 text-sm mb-4"
               style={{ background: "rgba(239, 68, 68, 0.08)", border: "1px solid var(--color-red)", color: "var(--color-red)" }}

@@ -62,6 +62,8 @@ app.include_router(memos.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 from routers import training
 app.include_router(training.router, prefix="/api")
+from routers import productivity
+app.include_router(productivity.router, prefix="/api")
 
 
 @app.get("/api/health")

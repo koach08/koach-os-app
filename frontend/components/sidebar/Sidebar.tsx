@@ -14,6 +14,7 @@ interface Props {
 
 const NAV_ITEMS = [
   { href: "/daily", label: "Daily", icon: "🌅" },
+  { href: "/coach", label: "コーチ", icon: "🧭" },
   { href: "/calendar", label: "カレンダー", icon: "🗓" },
   { href: "/tasks", label: "Tasks", icon: "✅" },
   { href: "/memos", label: "Memos", icon: "🪧" },

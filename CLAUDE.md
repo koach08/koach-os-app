@@ -1,5 +1,82 @@
-# CLAUDE.md — Koach OS v2 Build Specification for Claude Code
-# Claude Codeへの実装指示書
+# CLAUDE.md — Koach OS
+
+> **新セッションの Claude へ**: このファイルの「現状 (2026/05/23)」と「次セッションの始め方」を最初に読んでください。下の "v1 Build Specification" は履歴で、現状の Next.js + FastAPI 構成とは異なります。
+
+---
+
+## 現状 (2026/05/23)
+
+**今のアーキテクチャ** (v1 Streamlit から完全移行済み):
+- frontend: **Next.js 15.5 + React 19 + TypeScript + Tailwind v4** → Vercel (https://koach-os.vercel.app)
+- backend: **FastAPI + Python 3.13** → Railway (https://backend-production-0987.up.railway.app)
+- データソース: **Google Calendar をマスター** (japanesebusinessman4@gmail.com primary)、Gmail 2アカウント、ローカル jsonl 保管
+- AI ルーター: 7エンジン (Claude / GPT / Grok / Gemini / Venice / Perplexity / Groq)、`router.py` 集約
+
+**実装済み機能 (Phase 1)**:
+- `/daily` Daily Brief (今日/明日/今週 + AI brief)
+- `/calendar` 月グリッド + アジェンダ + 削除 (Google Calendar 直接)
+- `/gmail-sync` (📅 予定を追加) 4タブ: Gmail / PDF (Gemini multimodal) / Excel (時間割→RRULE) / 手動入力
+- `/coach` (🧭) Productivity Coach: バックログ + 生活ブロック + AI週次プラン → parse-plan → commit-plan で Calendar 一括書き込み
+- `/private` (🤫) Venice 専用プライベート相談 (ログ分離)
+- `/tasks` `/memos` `/documents` `/training` `/memory` `/settings` `/analyze` `/logs` `/review` `/` (Chat)
+
+**未着手 (Phase 2 以降、優先順位順)**:
+1. Daily Brief を Coach 連携 — 朝開くと「今日この時間にこれをやる」が自動表示 + 完了チェック
+2. AI Dispatcher — 目的→推奨AI(Claude.ai/ChatGPT/Claude Code/Codex/Gemini/AI Studio/Canva)＋MD/HTML指示書生成
+3. NotebookLM 的パーソナル RAG (memos/decisions/private_chat 横断検索＋引用)
+4. 集中タイマー + 週次レビュー (カテゴリ別時間配分グラフ)
+5. investment-app 連携 (資産・キャリア・健康・家族の総合 KPI)
+6. 状態モニタ (疲労/モチベ/体調で出力調整)
+7. マルチプロジェクト把握 (Code Harness 連携)
+8. AI モデル自動追従
+
+長期ビジョン詳細: 自動メモリ `koach_os_vision.md` 参照 (Alfred 構想 = 総合プライベート秘書 + 資産運用 + 生産性 OS + 家族・能力最大化を一体化)
+
+---
+
+## 次セッションの始め方
+
+```bash
+cd /tmp && rm -rf koach-os-app && git clone https://github.com/koach08/koach-os-app.git && cd koach-os-app
+```
+
+ユーザーに「Phase 2 から進めますか？」と確認するだけ。新規プロジェクト感は出さない。
+
+### 主要 API エンドポイント (詳細は `backend/routers/`)
+- **productivity**: `/api/productivity/{backlog|life-blocks|plan|parse-plan|commit-plan|categories}`
+- **calendar**: `/api/calendar/{upcoming|range|account|create-event|event/{id}|extract-events-from-pdf|extract-events-from-excel}`
+- **gmail**: `/api/gmail/{status|recent|extract-events|extract-events-from-emails|slots}`
+- **private**: `/api/private-chat`, `/api/private-chat/history`
+- **daily**: `/api/daily-brief`, **chat**: `/api/chat`, **tasks/memos/documents/training/memory/settings/logs/review/analyze/voice/suggestions** も同様
+
+### デプロイ運用 (重要)
+- **Railway は GitHub push で自動デプロイ**（service `backend`, project `koach-os-api`）。`railway logs --deployment` で確認
+- **Vercel は自動デプロイ停止中**。`git push` 後に必ず `cd frontend && vercel --prod --yes` を手動実行
+- Vercel scope: `koach08s-projects`, project: `koach-os`
+- Vercel link 済み: `.vercel/project.json` が `frontend/` 配下にある
+
+### 認証情報 (Railway env vars)
+- `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROK_API_KEY`, `GROQ_API_KEY`, `VENICE_API_KEY`, `PERPLEXITY_API_KEY`
+- `GOOGLE_TOKEN_JSON_B64` (slot 1: japanesebusinessman4), `GOOGLE_TOKEN_JSON_2_B64` (slot 2: kshgks59)
+- Test users mode で **7日でトークン失効**。失効したら `scripts/setup_gcal.py` で再発行 → base64 化 → Railway env var 更新
+
+### 既知の挙動
+- Gemini multimodal PDF: max_output_tokens=8192 上限。日程表 30件以上で truncate → `_repair_truncated_json_array` で部分復元
+- Gmail Slot 並列 fetch: backend で batch API (httplib2 は thread-unsafe なので並列スレッド不可)
+- 長期間 Gmail (>14日): フロントエンドで 15通バッチに分割 + 3並列 → dedupe
+
+### 開発時の原則 (志柿の好み)
+- 抽象名詞「〜性」NG、感情を煽る表現 NG、です/ます調 (志柿スタイル v2)
+- バランスチェック必須 (健康/家族/クリエイティブ/休息が削られない)
+- 「提案を見るだけ」で終わらせず、必ず行動 (Calendar 書き込み等) にまで届く UI
+- 自前の DB を増やさない。Google Calendar / Gmail / 既存 SaaS を信頼の置けるソースとして使う
+- Daily Brief, Coach は **Google Calendar を読み書きするだけで完結** する設計
+
+---
+
+## v1 Build Specification (履歴 — 現状とは異なる)
+
+> 以下は 2026/04 時点の Streamlit v1 仕様書です。現在は Next.js + FastAPI に完全移行しているため、参照のみ。新規実装の根拠にしないでください。
 
 ---
 

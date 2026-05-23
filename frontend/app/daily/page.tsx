@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 type Event = {
+  id?: string;
   title: string;
   start: string;
   end: string;
@@ -21,6 +22,24 @@ type Failure = {
   lesson: string;
 };
 
+type BacklogItem = {
+  id: string;
+  title: string;
+  category: string;
+  urgency: "high" | "medium" | "low";
+  estimated_minutes: number;
+  needs_ai: boolean;
+};
+
+type Completion = {
+  kind: "calendar" | "backlog";
+  ref_id: string;
+  title: string;
+  date: string;
+  category?: string;
+  completed_at: string;
+};
+
 type DailyBrief = {
   generated_at: string;
   schedule: Event[];
@@ -30,6 +49,8 @@ type DailyBrief = {
   decisions: Decision[];
   topics: string[];
   failures: Failure[];
+  backlog?: BacklogItem[];
+  completions_today?: Completion[];
   ai_brief: string;
   engine_used: string;
   model_used: string;
@@ -76,6 +97,17 @@ export default function DailyPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [engine, setEngine] = useState<string>("claude");
+  const [completedKeys, setCompletedKeys] = useState<Set<string>>(new Set());
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
+
+  const completionKey = (kind: "calendar" | "backlog", refId: string) =>
+    `${kind}:${refId}`;
+
+  const syncCompletionsFromData = (d: DailyBrief) => {
+    const keys = new Set<string>();
+    (d.completions_today ?? []).forEach((c) => keys.add(completionKey(c.kind, c.ref_id)));
+    setCompletedKeys(keys);
+  };
 
   const load = (engineOverride?: string) => {
     const e = engineOverride ?? engine;
@@ -86,7 +118,10 @@ export default function DailyPage() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<DailyBrief>;
       })
-      .then(setData)
+      .then((d) => {
+        setData(d);
+        syncCompletionsFromData(d);
+      })
       .catch((er: Error) => setError(er.message))
       .finally(() => setLoading(false));
   };
@@ -99,6 +134,53 @@ export default function DailyPage() {
   const handleEngineChange = (e: string) => {
     setEngine(e);
     load(e);
+  };
+
+  const toggleCompletion = async (
+    kind: "calendar" | "backlog",
+    refId: string,
+    title: string,
+    category = "",
+  ) => {
+    if (!refId) return;
+    const key = completionKey(kind, refId);
+    const isDone = completedKeys.has(key);
+    setPendingKeys((s) => new Set(s).add(key));
+    // optimistic toggle
+    setCompletedKeys((s) => {
+      const next = new Set(s);
+      if (isDone) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    try {
+      if (isDone) {
+        const params = new URLSearchParams({ ref_id: refId, kind });
+        const r = await fetch(`/api/completions?${params.toString()}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      } else {
+        const r = await fetch(`/api/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind, ref_id: refId, title, category }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      }
+    } catch {
+      // revert on failure
+      setCompletedKeys((s) => {
+        const next = new Set(s);
+        if (isDone) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    } finally {
+      setPendingKeys((s) => {
+        const next = new Set(s);
+        next.delete(key);
+        return next;
+      });
+    }
   };
 
   return (
@@ -252,6 +334,90 @@ export default function DailyPage() {
                 </div>
               </div>
 
+              {/* Coach バックログ — Daily Brief から直接チェック */}
+              {(data.backlog ?? []).length > 0 && (
+                <SectionCard
+                  emoji="🧭"
+                  title="Coach バックログ"
+                  count={(data.backlog ?? []).length}
+                  empty="バックログなし"
+                  isEmpty={false}
+                  badge={`${
+                    (data.backlog ?? []).filter((b) =>
+                      completedKeys.has(completionKey("backlog", b.id))
+                    ).length
+                  } / ${(data.backlog ?? []).length}`}
+                >
+                  <ul className="space-y-2.5">
+                    {(data.backlog ?? []).map((b) => {
+                      const key = completionKey("backlog", b.id);
+                      const done = completedKeys.has(key);
+                      const pending = pendingKeys.has(key);
+                      const urgencyColor =
+                        b.urgency === "high"
+                          ? "#ef4444"
+                          : b.urgency === "medium"
+                          ? "#f59e0b"
+                          : "#71717a";
+                      return (
+                        <li key={b.id} className="flex gap-3 items-start">
+                          <button
+                            onClick={() =>
+                              toggleCompletion("backlog", b.id, b.title, b.category)
+                            }
+                            disabled={pending}
+                            aria-label={done ? "完了取り消し" : "完了"}
+                            className="mt-1 shrink-0 transition-all"
+                            style={{
+                              width: "1.1rem",
+                              height: "1.1rem",
+                              borderRadius: "0.35rem",
+                              border: done
+                                ? "1px solid var(--color-accent)"
+                                : "1px solid var(--color-border)",
+                              background: done ? "var(--color-accent)" : "transparent",
+                              cursor: "pointer",
+                              opacity: pending ? 0.5 : 1,
+                              color: "white",
+                              fontSize: "0.7rem",
+                              lineHeight: 1,
+                            }}
+                          >
+                            {done ? "✓" : ""}
+                          </button>
+                          <div
+                            className="font-mono text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                            style={{
+                              background: `${urgencyColor}20`,
+                              color: urgencyColor,
+                              minWidth: "3rem",
+                              textAlign: "center",
+                              marginTop: "0.15rem",
+                            }}
+                          >
+                            {b.urgency}
+                          </div>
+                          <div className="flex-1" style={{ opacity: done ? 0.45 : 1 }}>
+                            <div
+                              className="text-sm"
+                              style={{ textDecoration: done ? "line-through" : "none" }}
+                            >
+                              {b.title}
+                            </div>
+                            <div
+                              className="text-[11px] mt-0.5"
+                              style={{ color: "var(--color-text-muted)" }}
+                            >
+                              {b.category} ・ 推定 {b.estimated_minutes} 分
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </SectionCard>
+              )}
+
               {/* 2-col layout for schedule + decisions */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <SectionCard
@@ -264,34 +430,77 @@ export default function DailyPage() {
                       : "予定なし"
                   }
                   isEmpty={data.schedule.length === 0}
+                  badge={
+                    data.schedule.length > 0
+                      ? `${
+                          data.schedule.filter((ev) =>
+                            ev.id ? completedKeys.has(completionKey("calendar", ev.id)) : false
+                          ).length
+                        } / ${data.schedule.length}`
+                      : undefined
+                  }
                 >
                   <ul className="space-y-3">
-                    {data.schedule.map((ev, i) => (
-                      <li key={i} className="flex gap-3">
-                        <div
-                          className="font-mono text-xs pt-1 shrink-0 px-2.5 py-1 rounded-md"
-                          style={{
-                            background: "var(--color-surface-hover)",
-                            color: "var(--color-text-muted)",
-                            minWidth: "3.5rem",
-                            textAlign: "center",
-                          }}
-                        >
-                          {formatTime(ev.start)}
-                        </div>
-                        <div className="flex-1 pt-0.5">
-                          <div className="text-sm font-medium">{ev.title}</div>
-                          {ev.location && (
+                    {data.schedule.map((ev, i) => {
+                      const key = ev.id ? completionKey("calendar", ev.id) : "";
+                      const done = key ? completedKeys.has(key) : false;
+                      const pending = key ? pendingKeys.has(key) : false;
+                      return (
+                        <li key={i} className="flex gap-3 items-start">
+                          <button
+                            onClick={() =>
+                              ev.id && toggleCompletion("calendar", ev.id, ev.title)
+                            }
+                            disabled={!ev.id || pending}
+                            aria-label={done ? "完了取り消し" : "完了"}
+                            className="mt-1 shrink-0 transition-all"
+                            style={{
+                              width: "1.1rem",
+                              height: "1.1rem",
+                              borderRadius: "0.35rem",
+                              border: done
+                                ? "1px solid var(--color-accent)"
+                                : "1px solid var(--color-border)",
+                              background: done ? "var(--color-accent)" : "transparent",
+                              cursor: ev.id ? "pointer" : "not-allowed",
+                              opacity: pending ? 0.5 : 1,
+                              color: "white",
+                              fontSize: "0.7rem",
+                              lineHeight: 1,
+                            }}
+                          >
+                            {done ? "✓" : ""}
+                          </button>
+                          <div
+                            className="font-mono text-xs pt-1 shrink-0 px-2.5 py-1 rounded-md"
+                            style={{
+                              background: "var(--color-surface-hover)",
+                              color: "var(--color-text-muted)",
+                              minWidth: "3.5rem",
+                              textAlign: "center",
+                            }}
+                          >
+                            {formatTime(ev.start)}
+                          </div>
+                          <div className="flex-1 pt-0.5" style={{ opacity: done ? 0.45 : 1 }}>
                             <div
-                              className="text-xs mt-0.5"
-                              style={{ color: "var(--color-text-muted)" }}
+                              className="text-sm font-medium"
+                              style={{ textDecoration: done ? "line-through" : "none" }}
                             >
-                              📍 {ev.location}
+                              {ev.title}
                             </div>
-                          )}
-                        </div>
-                      </li>
-                    ))}
+                            {ev.location && (
+                              <div
+                                className="text-xs mt-0.5"
+                                style={{ color: "var(--color-text-muted)" }}
+                              >
+                                📍 {ev.location}
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </SectionCard>
 
@@ -479,6 +688,7 @@ function SectionCard({
   empty,
   isEmpty,
   children,
+  badge,
 }: {
   emoji: string;
   title: string;
@@ -486,6 +696,7 @@ function SectionCard({
   empty: string;
   isEmpty: boolean;
   children: React.ReactNode;
+  badge?: string;
 }) {
   return (
     <section
@@ -508,7 +719,7 @@ function SectionCard({
               color: "var(--color-text-muted)",
             }}
           >
-            {count}
+            {badge ?? count}
           </span>
         )}
       </header>

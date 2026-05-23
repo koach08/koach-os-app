@@ -66,6 +66,8 @@ from routers import productivity
 app.include_router(productivity.router, prefix="/api")
 from routers import private_chat
 app.include_router(private_chat.router, prefix="/api")
+from routers import completions
+app.include_router(completions.router, prefix="/api")
 
 
 @app.get("/api/health")

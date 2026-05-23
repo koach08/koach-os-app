@@ -180,6 +180,7 @@ def get_events(days_ahead: int = 0) -> list[dict]:
         start_raw = e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
         end_raw = e.get("end", {}).get("dateTime", e.get("end", {}).get("date", ""))
         events.append({
+            "id": e.get("id", ""),
             "summary": e.get("summary", "(no title)"),
             "start": start_raw,
             "end": end_raw,

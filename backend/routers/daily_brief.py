@@ -26,6 +26,7 @@ router = APIRouter()
 def _format_event(ev: dict) -> dict:
     """Calendar event -> minimal frontend-friendly shape."""
     return {
+        "id": ev.get("id", ""),
         "title": ev.get("summary", "(no title)"),
         "start": ev.get("start", ""),
         "end": ev.get("end", ""),
@@ -181,6 +182,35 @@ def daily_brief(
     # 5. オープンタスク
     tasks = _open_tasks()
 
+    # 6. Coach バックログ（未完）
+    try:
+        from routers.productivity import _load_backlog
+        backlog_items = [
+            {
+                "id": b.get("id", ""),
+                "title": b.get("title", ""),
+                "category": b.get("category", "other"),
+                "urgency": b.get("urgency", "medium"),
+                "estimated_minutes": b.get("estimated_minutes", 60),
+                "needs_ai": b.get("needs_ai", False),
+            }
+            for b in _load_backlog()
+            if not b.get("done")
+        ]
+    except Exception:
+        backlog_items = []
+
+    # 7. 今日の完了ログ
+    try:
+        from routers.completions import _current_state
+        today_str = now.strftime("%Y-%m-%d")
+        completions_today = [
+            v for (_k, _r, d), v in _current_state().items() if d == today_str
+        ]
+        completions_today.sort(key=lambda x: x.get("completed_at", ""))
+    except Exception:
+        completions_today = []
+
     # 5. AI問いかけ（L3介入相当：今日3つに絞れ）
     schedule_text = (
         "\n".join(
@@ -203,6 +233,19 @@ def daily_brief(
         if tasks
         else "(オープンなタスクなし)"
     )
+    backlog_text = (
+        "\n".join(
+            f"- [{b['urgency']}] [{b['category']}] {b['title']} (推定{b['estimated_minutes']}分)"
+            for b in backlog_items[:15]
+        )
+        if backlog_items
+        else "(Coach バックログ空)"
+    )
+    completion_text = (
+        "\n".join(f"- {c.get('title','')}" for c in completions_today)
+        if completions_today
+        else "(今日まだ完了なし)"
+    )
 
     prompt = f"""あなたは Koach OS。志柿のための reflective AI partner。
 今は {now.strftime('%Y-%m-%d %H:%M (%A)')} 。
@@ -220,12 +263,19 @@ def daily_brief(
 ## オープンタスク
 {tasks_text}
 
+## Coach バックログ
+{backlog_text}
+
+## 今日すでに完了したこと
+{completion_text}
+
 ## 出力ルール
-- 「今日やる3つ」を提案する。多すぎ判定したら「絞れ」と言う
-- 予定の隙間時間をどう使うか提案
+- 予定とバックログを見て「今日この時間にこれをやる」を3つだけ提案する。時間帯（例: 10:00-11:30）を必ず添える
+- 予定の隙間時間を具体的にどう使うかブロックで示す
 - 直近の決定を1つだけリマインド（忘れがちなものを優先）
 - L3 介入レベル: 戦略的視点で1つ問いを立てる（「本当に必要？」など）
-- 200字以内。箇条書き4-5項目
+- 完了済みは祝うが繰り返さない
+- 250字以内。箇条書き
 - 日本語、です/ます調、煽らない、抽象名詞「〜性」は使わない"""
 
     # Resolve model: explicit > engine default > claude default
@@ -254,6 +304,8 @@ def daily_brief(
         "topics": topics,
         "failures": failures,
         "tasks": tasks,
+        "backlog": backlog_items,
+        "completions_today": completions_today,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

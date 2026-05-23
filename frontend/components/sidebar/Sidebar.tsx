@@ -16,7 +16,7 @@ const NAV_ITEMS = [
   { href: "/daily", label: "Daily", icon: "🌅" },
   { href: "/tasks", label: "Tasks", icon: "✅" },
   { href: "/memos", label: "Memos", icon: "🪧" },
-  { href: "/gmail-sync", label: "Inbox→Cal", icon: "📨" },
+  { href: "/gmail-sync", label: "予定を追加", icon: "📅" },
   { href: "/documents", label: "Docs→Tasks", icon: "📄" },
   { href: "/training", label: "Training", icon: "💪" },
   { href: "/", label: "Chat", icon: "💬" },

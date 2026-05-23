@@ -358,7 +358,7 @@ export default function GmailSyncPage() {
             className="text-xs uppercase tracking-widest mb-2"
             style={{ color: "var(--color-text-muted)", letterSpacing: "0.2em" }}
           >
-            INBOX → CALENDAR
+            ADD TO GOOGLE CALENDAR
           </p>
           <h1
             className="text-4xl font-bold tracking-tight"
@@ -368,10 +368,10 @@ export default function GmailSyncPage() {
               WebkitTextFillColor: "transparent",
             }}
           >
-            メールから予定を吸い出す
+            予定を Google Calendar に追加
           </h1>
           <p className="mt-3 text-sm max-w-xl" style={{ color: "var(--color-text-muted)" }}>
-            Gemini が直近の Gmail を読んで、Calendar に追加すべき予定を提案します。承認したものだけ Calendar に書き込まれます。
+            Gmail / PDF / Excel から AI が予定を抽出。または手動入力。すべて Google Calendar に直接書き込まれます（iPhone も Google アカウント連携で自動同期）。
           </p>
         </div>
       </div>

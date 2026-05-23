@@ -274,6 +274,69 @@ def extract_events_from_emails(req: ExtractFromEmailsRequest):
     }
 
 
+def _build_pdf_native_prompt(today_str: str, source_label: str) -> str:
+    return f"""この PDF からカレンダーに追加すべき予定をすべて抽出してください。
+
+今日の日付: {today_str}
+ファイル名: {source_label}
+
+PDF には大学関連の日程表（教授会・研究科会議・学科会議・委員会・FD/SD・採点会議・卒論審査・入試業務・年間予定表・時間割など）が含まれている可能性が高い。表組みの日程はすべて1件ずつ別エントリとして抽出してください（10件以上ある場合も省略せず全部出す）。
+
+出力ルール:
+- JSON 配列のみ出力。マークダウン・コメント・余計な説明は一切なし
+- 各要素: {{"title", "start_iso", "end_iso", "description", "location", "confidence", "event_type", "recurrence", "source_email_id", "source_subject"}}
+- start_iso/end_iso: ISO 8601 with +09:00 (例 "2026-06-10T14:00:00+09:00") または終日なら "YYYY-MM-DD"
+- event_type: "meeting" | "committee" | "deadline" | "default"
+  - 教授会・研究科会議・委員会系 → "committee"
+  - 普通の会議・打合せ・授業 → "meeting"
+  - 締切・提出期限 → "deadline"
+  - その他 → "default"
+- recurrence: 週次繰り返し（時間割など）の場合のみ "FREQ=WEEKLY" 形式、それ以外は ""
+- source_email_id: "" のまま
+- source_subject: ファイル名 "{source_label}" を使う
+- 年が書かれていない場合は今日の日付から推測（今が5月で「6月10日」とあれば 2026-06-10）
+- 終了時刻が無い場合は開始から1時間後を仮置き
+
+日程表に20件あれば20件、50件あれば50件、すべて返す。1件も漏らさず、しかし作り話は禁止（書かれていない日付は出さない）。"""
+
+
+def _parse_proposals_json(raw: str, source_label: str) -> tuple[list[dict], str | None]:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    if not cleaned.startswith("["):
+        first = cleaned.find("[")
+        last = cleaned.rfind("]")
+        if first != -1 and last != -1 and last > first:
+            cleaned = cleaned[first:last + 1]
+    parse_error: str | None = None
+    try:
+        proposals = json.loads(cleaned)
+        if not isinstance(proposals, list):
+            proposals = []
+    except json.JSONDecodeError as e:
+        proposals = []
+        parse_error = str(e)
+    normalized: list[dict] = []
+    for p in proposals:
+        if not isinstance(p, dict):
+            continue
+        normalized.append({
+            "title": str(p.get("title", ""))[:200],
+            "start_iso": str(p.get("start_iso", "")),
+            "end_iso": str(p.get("end_iso", "")),
+            "description": str(p.get("description", ""))[:500],
+            "location": str(p.get("location", ""))[:200],
+            "confidence": p.get("confidence", "medium"),
+            "event_type": p.get("event_type", "default"),
+            "recurrence": str(p.get("recurrence", "")),
+            "source_email_id": "",
+            "source_subject": source_label,
+        })
+    return normalized, parse_error
+
+
 def _extract_with_ai(full_text: str, source_label: str, engine: str) -> dict:
     """Shared AI extraction for PDF/Excel/text. Returns the same shape as the PDF endpoint."""
     today_str = now_jst().strftime("%Y-%m-%d (%A)")
@@ -429,6 +492,44 @@ async def extract_events_from_pdf(
     contents = await file.read()
     if not contents:
         raise HTTPException(status_code=400, detail="empty file")
+
+    # Path A: send the PDF directly to Gemini (multimodal — handles tables/layout/scanned natively)
+    try:
+        import google.generativeai as genai
+        from data_manager import now_jst as _now_jst
+        import os as _os
+        api_key = _os.environ.get("GEMINI_API_KEY")
+        if api_key:
+            genai.configure(api_key=api_key)
+            today_str = _now_jst().strftime("%Y-%m-%d (%A)")
+            prompt = _build_pdf_native_prompt(today_str, file.filename or "uploaded.pdf")
+            model_name = DEFAULT_MODELS.get("gemini", "gemini-2.0-flash-exp")
+            mdl = genai.GenerativeModel(model_name=model_name)
+            resp = mdl.generate_content(
+                [
+                    {"mime_type": "application/pdf", "data": contents},
+                    prompt,
+                ],
+                generation_config={"max_output_tokens": 8000, "temperature": 0.2},
+            )
+            raw = resp.text if hasattr(resp, "text") else str(resp)
+            normalized, parse_error = _parse_proposals_json(raw, file.filename or "PDF")
+            return {
+                "proposals": normalized,
+                "filename": file.filename,
+                "page_count": 0,  # not extracted in this path
+                "engine_used": "gemini-native-pdf",
+                "model_used": model_name,
+                "parse_error": parse_error,
+                "ai_raw_preview": raw[:1500] if not normalized else None,
+                "text_preview": "(Gemini が PDF を直接解析しました)",
+                "text_length": len(contents),
+            }
+    except Exception as e:
+        # fall through to text extraction path
+        gemini_native_error = str(e)
+    else:
+        gemini_native_error = None
 
     text_pages: list[str] = []
     # First try pdfplumber (preserves tables/columns), fall back to PyPDF2

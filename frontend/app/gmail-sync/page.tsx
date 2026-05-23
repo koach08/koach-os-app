@@ -306,6 +306,8 @@ export default function GmailSyncPage() {
       });
       if (data.parse_error && (data.proposals || []).length === 0) {
         setError(data.parse_error);
+      } else if (data.parse_error && String(data.parse_error).startsWith("recovered_partial")) {
+        setError(`一部のみ復元 (Gemini出力が途中で切れたため)。表示されている分は使えます: ${data.parse_error}`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

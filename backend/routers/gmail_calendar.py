@@ -50,6 +50,25 @@ def gmail_recent(
         raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
 
 
+@router.get("/calendar/account")
+def calendar_account():
+    """Return the email address whose primary calendar is being used."""
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="not configured")
+    try:
+        from gcal import _get_service
+        service = _get_service()
+        about = service.calendarList().get(calendarId="primary").execute()
+        # Some accounts return the email in summary, others in id
+        return {
+            "calendar_id": about.get("id", ""),
+            "summary": about.get("summary", ""),
+            "timezone": about.get("timeZone", ""),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"calendar account lookup failed: {e}")
+
+
 @router.get("/gmail/slots")
 def gmail_slots():
     """Return list of configured account slots so frontend can chunk fetches per-account."""
@@ -300,6 +319,44 @@ PDF には大学関連の日程表（教授会・研究科会議・学科会議�
 日程表に20件あれば20件、50件あれば50件、すべて返す。1件も漏らさず、しかし作り話は禁止（書かれていない日付は出さない）。"""
 
 
+def _repair_truncated_json_array(s: str) -> str | None:
+    """For a truncated JSON array, walk back to the last balanced object and close the array.
+
+    Handles strings/escapes so we don't split inside a value. Returns repaired text or None.
+    """
+    # Find the opening [
+    start = s.find("[")
+    if start == -1:
+        return None
+    depth = 0  # object depth
+    in_string = False
+    escape = False
+    last_complete_end = -1  # index of the '}' that closed an object at depth 0 (i.e. an array element)
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            continue
+        if c == '"':
+            in_string = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                last_complete_end = i
+        elif c == "]" and depth == 0:
+            return s[start : i + 1]  # already complete
+    if last_complete_end == -1:
+        return None
+    return s[start : last_complete_end + 1] + "]"
+
+
 def _parse_proposals_json(raw: str, source_label: str) -> tuple[list[dict], str | None]:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
@@ -307,17 +364,32 @@ def _parse_proposals_json(raw: str, source_label: str) -> tuple[list[dict], str 
         cleaned = re.sub(r"\s*```$", "", cleaned)
     if not cleaned.startswith("["):
         first = cleaned.find("[")
+        if first != -1:
+            cleaned = cleaned[first:]
+    # Ensure closing ]
+    if not cleaned.rstrip().endswith("]"):
         last = cleaned.rfind("]")
-        if first != -1 and last != -1 and last > first:
-            cleaned = cleaned[first:last + 1]
+        if last != -1:
+            cleaned = cleaned[: last + 1]
     parse_error: str | None = None
+    proposals: list = []
     try:
         proposals = json.loads(cleaned)
         if not isinstance(proposals, list):
             proposals = []
     except json.JSONDecodeError as e:
-        proposals = []
         parse_error = str(e)
+        # Repair: walk back to the last well-formed "},"" boundary and close the array there.
+        repaired = _repair_truncated_json_array(cleaned)
+        if repaired is not None:
+            try:
+                proposals = json.loads(repaired)
+                if isinstance(proposals, list):
+                    parse_error = f"recovered_partial: {parse_error} (kept {len(proposals)} items)"
+                else:
+                    proposals = []
+            except json.JSONDecodeError:
+                proposals = []
     normalized: list[dict] = []
     for p in proposals:
         if not isinstance(p, dict):
@@ -510,7 +582,7 @@ async def extract_events_from_pdf(
                     {"mime_type": "application/pdf", "data": contents},
                     prompt,
                 ],
-                generation_config={"max_output_tokens": 8000, "temperature": 0.2},
+                generation_config={"max_output_tokens": 32000, "temperature": 0.2},
             )
             raw = resp.text if hasattr(resp, "text") else str(resp)
             normalized, parse_error = _parse_proposals_json(raw, file.filename or "PDF")

@@ -44,6 +44,7 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Event | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [account, setAccount] = useState<{ calendar_id: string; summary: string; timezone: string } | null>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -65,6 +66,13 @@ export default function CalendarPage() {
     }
     return { rangeStart: toYMD(gridStart), rangeEnd: toYMD(gridEnd), gridDays: days, _firstOfMonth: first, _lastOfMonth: last };
   }, [cursor]);
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/calendar/account`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setAccount(d))
+      .catch(() => {});
+  }, [apiBase]);
 
   useEffect(() => {
     let abort = false;
@@ -138,7 +146,7 @@ export default function CalendarPage() {
       >
         <div className="max-w-6xl mx-auto">
           <p className="text-xs uppercase tracking-widest mb-2" style={{ color: "var(--color-text-muted)", letterSpacing: "0.2em" }}>
-            GOOGLE CALENDAR
+            GOOGLE CALENDAR {account && (<span className="lowercase normal-case tracking-normal opacity-80">· {account.calendar_id || account.summary}</span>)}
           </p>
           <div className="flex items-end justify-between flex-wrap gap-3">
             <h1

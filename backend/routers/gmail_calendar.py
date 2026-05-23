@@ -589,7 +589,7 @@ async def extract_events_from_pdf(
 
 
 @router.get("/calendar/upcoming")
-def calendar_upcoming(days_ahead: int = Query(7, ge=1, le=60)):
+def calendar_upcoming(days_ahead: int = Query(7, ge=1, le=180)):
     """Read upcoming events from Google Calendar (the source of truth)."""
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
@@ -598,6 +598,31 @@ def calendar_upcoming(days_ahead: int = Query(7, ge=1, le=60)):
         return {"events": events, "count": len(events)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Calendar read failed: {e}")
+
+
+@router.get("/calendar/range")
+def calendar_range(start: str = Query(...), end: str = Query(...)):
+    """Read events between two ISO dates (YYYY-MM-DD). Used by the month grid."""
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+    try:
+        from gcal import list_events_range
+        events = list_events_range(start_date=start, end_date=end)
+        return {"events": events, "count": len(events)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Calendar read failed: {e}")
+
+
+@router.delete("/calendar/event/{event_id}")
+def calendar_delete_event(event_id: str):
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+    try:
+        from gcal import delete_event
+        delete_event(event_id)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Calendar delete failed: {e}")
 
 
 class CreateEventRequest(BaseModel):

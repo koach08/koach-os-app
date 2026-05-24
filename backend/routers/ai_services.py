@@ -32,10 +32,10 @@ DEFAULT_SERVICES = [
     {"id": "claude-code", "name": "Claude Code", "url": "https://docs.claude.com/en/docs/claude-code", "emoji": "🧪", "category": "code", "color": "#d97757", "note": "CLI 経由 (ローカル)"},
     {"id": "perplexity", "name": "Perplexity", "url": "https://perplexity.ai/", "emoji": "🔍", "category": "research", "color": "#20808d", "note": "Web 検索 + 引用"},
     {"id": "notebooklm", "name": "NotebookLM", "url": "https://notebooklm.google.com/", "emoji": "📓", "category": "research", "color": "#1a73e8", "note": "自分のドキュメント RAG"},
-    {"id": "genspark", "name": "GenSpark", "url": "https://genspark.ai/", "emoji": "⚡", "category": "research", "color": "#ff5e3a", "note": "自動リサーチ→スライド"},
     {"id": "aistudio", "name": "AI Studio", "url": "https://aistudio.google.com/", "emoji": "🛠", "category": "studio", "color": "#4285f4", "note": "Gemini API テスト"},
     {"id": "grammarly", "name": "Grammarly", "url": "https://app.grammarly.com/", "emoji": "✍️", "category": "writing", "color": "#15c39a", "note": "英文校正"},
     {"id": "canva", "name": "Canva AI", "url": "https://canva.com/", "emoji": "🎨", "category": "creative", "color": "#00c4cc", "note": "スライド・SNS 画像"},
+    {"id": "firefly", "name": "Adobe Firefly", "url": "https://firefly.adobe.com/", "emoji": "🔥", "category": "creative", "color": "#fa0f00", "note": "商用可・著作権クリーン (販売デザイン用)"},
 ]
 
 

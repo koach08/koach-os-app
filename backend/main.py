@@ -79,6 +79,8 @@ app.include_router(health_intake.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
 app.include_router(voice_intake.router, prefix="/api")
 app.include_router(ai_services.router, prefix="/api")
+from routers import media_extract
+app.include_router(media_extract.router, prefix="/api")
 
 
 @app.get("/api/health")

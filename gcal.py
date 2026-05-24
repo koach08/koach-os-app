@@ -188,6 +188,41 @@ def get_events(days_ahead: int = 0) -> list[dict]:
             "description": e.get("description", ""),
             "all_day": "T" not in start_raw,
         })
+    # primary 以外の calendar (iCloud subscribe / 家族 etc.) も同日範囲で追加
+    try:
+        seen_ids = {ev["id"] for ev in events if ev["id"]}
+        for cid in _all_visible_calendar_ids():
+            if cid in ("primary", ""):
+                continue
+            try:
+                extra = service.events().list(
+                    calendarId=cid,
+                    timeMin=start_of_day.isoformat(),
+                    timeMax=end_of_day.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+            except Exception:
+                continue
+            for e in extra.get("items", []):
+                evid = e.get("id", "")
+                if evid in seen_ids:
+                    continue
+                seen_ids.add(evid)
+                start_raw = e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
+                end_raw = e.get("end", {}).get("dateTime", e.get("end", {}).get("date", ""))
+                events.append({
+                    "id": evid,
+                    "summary": e.get("summary", "(no title)"),
+                    "start": start_raw,
+                    "end": end_raw,
+                    "location": e.get("location", ""),
+                    "description": e.get("description", ""),
+                    "all_day": "T" not in start_raw,
+                })
+        events.sort(key=lambda x: x.get("start", ""))
+    except Exception:
+        pass
     return events
 
 
@@ -286,39 +321,39 @@ def create_event(
     return result
 
 
+def _all_visible_calendar_ids() -> list[str]:
+    """primary + 自分が subscribe している全カレンダー (iCloud subscribe / 家族 calendar 含む)."""
+    import os
+    explicit = os.environ.get("EXTRA_CALENDAR_IDS", "").strip()
+    if explicit:
+        return ["primary"] + [c.strip() for c in explicit.split(",") if c.strip()]
+    # auto-discover: 隠してないカレンダー全部
+    try:
+        service = _get_service()
+        cal_list = service.calendarList().list(showHidden=False, showDeleted=False).execute()
+        ids: list[str] = []
+        for c in cal_list.get("items", []):
+            if c.get("hidden") or c.get("deleted"):
+                continue
+            if c.get("selected") is False:
+                # Google Calendar UI で OFF にしているものは除外
+                continue
+            ids.append(c.get("id", ""))
+        if "primary" not in ids:
+            ids.insert(0, "primary")
+        return [i for i in ids if i]
+    except Exception:
+        return ["primary"]
+
+
 def list_events_range(start_date: str, end_date: str) -> list[dict]:
-    """List events in a date range (YYYY-MM-DD strings, end exclusive)."""
-    from datetime import datetime, timezone, timedelta
-    service = _get_service()
-    # Treat dates as Asia/Tokyo and convert to UTC for the API
-    tz = timezone(timedelta(hours=9))
-    start_dt = datetime.fromisoformat(start_date).replace(tzinfo=tz)
-    end_dt = datetime.fromisoformat(end_date).replace(tzinfo=tz)
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=start_dt.astimezone(timezone.utc).isoformat(),
-        timeMax=end_dt.astimezone(timezone.utc).isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=500,
-    ).execute()
-    items = events_result.get("items", [])
-    out: list[dict] = []
-    for ev in items:
-        start = ev.get("start", {})
-        end_ = ev.get("end", {})
-        out.append({
-            "id": ev.get("id", ""),
-            "title": ev.get("summary", "(無題)"),
-            "start_iso": start.get("dateTime") or start.get("date") or "",
-            "end_iso": end_.get("dateTime") or end_.get("date") or "",
-            "all_day": "date" in start,
-            "location": ev.get("location", ""),
-            "description": ev.get("description", ""),
-            "html_link": ev.get("htmlLink", ""),
-            "event_type": detect_event_type(ev.get("summary", ""), ev.get("description", "")),
-        })
-    return out
+    """List events in a date range (YYYY-MM-DD strings, end exclusive).
+
+    primary + 自分が subscribe している全カレンダーを横断する。iCloud → Google
+    subscribe してあれば保育園送迎などもここで一緒に拾われる。
+    """
+    cal_ids = _all_visible_calendar_ids()
+    return list_events_range_multi(start_date, end_date, calendar_ids=cal_ids)
 
 
 def delete_event(event_id: str) -> None:
@@ -387,36 +422,17 @@ def list_family_events_range(start_date: str, end_date: str) -> list[dict]:
 
 
 def list_upcoming_events(days_ahead: int = 7) -> list[dict]:
-    """Read upcoming events from primary Google Calendar."""
+    """Read upcoming events from all visible calendars (primary + subscribed)."""
     from datetime import datetime, timedelta, timezone
-    service = _get_service()
     now = datetime.now(timezone.utc)
     end = now + timedelta(days=days_ahead)
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=now.isoformat(),
-        timeMax=end.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=100,
-    ).execute()
-    items = events_result.get("items", [])
-    out: list[dict] = []
-    for ev in items:
-        start = ev.get("start", {})
-        end_ = ev.get("end", {})
-        out.append({
-            "id": ev.get("id", ""),
-            "title": ev.get("summary", "(無題)"),
-            "start_iso": start.get("dateTime") or start.get("date") or "",
-            "end_iso": end_.get("dateTime") or end_.get("date") or "",
-            "all_day": "date" in start,
-            "location": ev.get("location", ""),
-            "description": ev.get("description", ""),
-            "html_link": ev.get("htmlLink", ""),
-            "event_type": detect_event_type(ev.get("summary", ""), ev.get("description", "")),
-        })
-    return out
+    start_date = now.strftime("%Y-%m-%d")
+    end_date = end.strftime("%Y-%m-%d")
+    cal_ids = _all_visible_calendar_ids()
+    events = list_events_range_multi(start_date, end_date, calendar_ids=cal_ids)
+    # 過去のものはフィルタ (timeMin 厳密適用)
+    now_iso = now.isoformat()
+    return [e for e in events if (e.get("end_iso") or e.get("start_iso") or "") >= now_iso[:19]]
 
 
 def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:

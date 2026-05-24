@@ -32,6 +32,27 @@ def week_events():
     return {"events": get_week_events(), "configured": True}
 
 
+@router.get("/calendar/visible")
+def visible_calendars():
+    """全 slot で backend が見えている calendar 一覧 (debug 用)。"""
+    if not is_configured():
+        return {"configured": False, "sources": []}
+    from gcal import _all_visible_calendar_sources, _get_service
+    out = []
+    for slot, cid in _all_visible_calendar_sources():
+        meta = {"slot": slot, "calendar_id": cid, "summary": cid, "primary": cid == "primary"}
+        try:
+            service = _get_service(slot)
+            info = service.calendarList().get(calendarId=cid).execute()
+            meta["summary"] = info.get("summary") or info.get("summaryOverride") or cid
+            meta["description"] = info.get("description", "")
+            meta["timezone"] = info.get("timeZone", "")
+        except Exception:
+            pass
+        out.append(meta)
+    return {"configured": True, "sources": out, "count": len(out)}
+
+
 @router.get("/calendar/family")
 def family_events(days_ahead: int = 7):
     """EXTRA_CALENDAR_IDS で指定された家族 calendar の予定。"""

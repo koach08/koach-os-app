@@ -149,14 +149,10 @@ def _get_gmail_service(slot: int = 1):
 def get_events(days_ahead: int = 0) -> list[dict]:
     """Get events for today (days_ahead=0) or upcoming days.
 
+    全 slot × 全 visible calendar を横断する。
     Returns list of {summary, start, end, location, description}.
     """
     if not is_configured():
-        return []
-
-    try:
-        service = _get_service()
-    except Exception:
         return []
 
     now = now_jst()
@@ -164,65 +160,31 @@ def get_events(days_ahead: int = 0) -> list[dict]:
     start_of_day = target.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = target.replace(hour=23, minute=59, second=59, microsecond=0)
 
-    try:
-        result = service.events().list(
-            calendarId="primary",
-            timeMin=start_of_day.isoformat(),
-            timeMax=end_of_day.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
-    except Exception:
-        return []
-
-    events = []
-    for e in result.get("items", []):
-        start_raw = e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
-        end_raw = e.get("end", {}).get("dateTime", e.get("end", {}).get("date", ""))
+    # 全 slot × 全 visible calendar から拾い、日付範囲でフィルタ
+    rows = list_events_range_multi(
+        start_of_day.strftime("%Y-%m-%d"),
+        (end_of_day + timedelta(days=1)).strftime("%Y-%m-%d"),
+    )
+    day_str = start_of_day.strftime("%Y-%m-%d")
+    events: list[dict] = []
+    for r in rows:
+        s = r.get("start_iso") or ""
+        e_ = r.get("end_iso") or s
+        if not s:
+            continue
+        # その日に被るもの (all-day 含む)
+        if not (s[:10] <= day_str <= (e_[:10] or s[:10])):
+            continue
         events.append({
-            "id": e.get("id", ""),
-            "summary": e.get("summary", "(no title)"),
-            "start": start_raw,
-            "end": end_raw,
-            "location": e.get("location", ""),
-            "description": e.get("description", ""),
-            "all_day": "T" not in start_raw,
+            "id": r.get("id", ""),
+            "summary": r.get("title", "(no title)"),
+            "start": s,
+            "end": e_,
+            "location": r.get("location", ""),
+            "description": r.get("description", ""),
+            "all_day": r.get("all_day", False),
         })
-    # primary 以外の calendar (iCloud subscribe / 家族 etc.) も同日範囲で追加
-    try:
-        seen_ids = {ev["id"] for ev in events if ev["id"]}
-        for cid in _all_visible_calendar_ids():
-            if cid in ("primary", ""):
-                continue
-            try:
-                extra = service.events().list(
-                    calendarId=cid,
-                    timeMin=start_of_day.isoformat(),
-                    timeMax=end_of_day.isoformat(),
-                    singleEvents=True,
-                    orderBy="startTime",
-                ).execute()
-            except Exception:
-                continue
-            for e in extra.get("items", []):
-                evid = e.get("id", "")
-                if evid in seen_ids:
-                    continue
-                seen_ids.add(evid)
-                start_raw = e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
-                end_raw = e.get("end", {}).get("dateTime", e.get("end", {}).get("date", ""))
-                events.append({
-                    "id": evid,
-                    "summary": e.get("summary", "(no title)"),
-                    "start": start_raw,
-                    "end": end_raw,
-                    "location": e.get("location", ""),
-                    "description": e.get("description", ""),
-                    "all_day": "T" not in start_raw,
-                })
-        events.sort(key=lambda x: x.get("start", ""))
-    except Exception:
-        pass
+    events.sort(key=lambda x: x.get("start", ""))
     return events
 
 
@@ -322,38 +284,68 @@ def create_event(
 
 
 def _all_visible_calendar_ids() -> list[str]:
-    """primary + 自分が subscribe している全カレンダー (iCloud subscribe / 家族 calendar 含む)."""
+    """slot 1 の visible calendar 群（後方互換）."""
+    return [cid for (_s, cid) in _all_visible_calendar_sources()]
+
+
+def _all_visible_calendar_sources() -> list[tuple[int, str]]:
+    """全 slot を横断して (slot, calendar_id) を返す。
+
+    各 slot の primary + その slot で見えている隠してないカレンダーを返す。
+    EXTRA_CALENDAR_IDS が指定されていれば slot 1 にのみ追加。
+    """
     import os
-    explicit = os.environ.get("EXTRA_CALENDAR_IDS", "").strip()
-    if explicit:
-        return ["primary"] + [c.strip() for c in explicit.split(",") if c.strip()]
-    # auto-discover: 隠してないカレンダー全部
-    try:
-        service = _get_service()
-        cal_list = service.calendarList().list(showHidden=False, showDeleted=False).execute()
-        ids: list[str] = []
-        for c in cal_list.get("items", []):
+    out: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    explicit = [c.strip() for c in os.environ.get("EXTRA_CALENDAR_IDS", "").split(",") if c.strip()]
+    for slot in _configured_slots():
+        try:
+            service = _get_service(slot)
+            cal_list = service.calendarList().list(showHidden=False, showDeleted=False).execute()
+        except Exception:
+            # primary だけは入れておく
+            key = f"{slot}:primary"
+            if key not in seen:
+                seen.add(key)
+                out.append((slot, "primary"))
+            continue
+        items = cal_list.get("items", []) or []
+        has_primary = False
+        for c in items:
             if c.get("hidden") or c.get("deleted"):
                 continue
             if c.get("selected") is False:
-                # Google Calendar UI で OFF にしているものは除外
                 continue
-            ids.append(c.get("id", ""))
-        if "primary" not in ids:
-            ids.insert(0, "primary")
-        return [i for i in ids if i]
-    except Exception:
-        return ["primary"]
+            cid = c.get("id", "")
+            if not cid:
+                continue
+            if c.get("primary"):
+                has_primary = True
+            key = f"{slot}:{cid}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((slot, cid))
+        if not has_primary:
+            key = f"{slot}:primary"
+            if key not in seen:
+                seen.add(key)
+                out.append((slot, "primary"))
+    # slot 1 の EXTRA_CALENDAR_IDS を追加
+    for cid in explicit:
+        key = f"1:{cid}"
+        if key not in seen:
+            seen.add(key)
+            out.append((1, cid))
+    return out
 
 
 def list_events_range(start_date: str, end_date: str) -> list[dict]:
     """List events in a date range (YYYY-MM-DD strings, end exclusive).
 
-    primary + 自分が subscribe している全カレンダーを横断する。iCloud → Google
-    subscribe してあれば保育園送迎などもここで一緒に拾われる。
+    全 slot × 全 visible calendar を横断 (japanesebusinessman4 + kshgks59 等)。
     """
-    cal_ids = _all_visible_calendar_ids()
-    return list_events_range_multi(start_date, end_date, calendar_ids=cal_ids)
+    return list_events_range_multi(start_date, end_date)
 
 
 def delete_event(event_id: str) -> None:
@@ -369,16 +361,34 @@ def _extra_calendar_ids() -> list[str]:
 
 
 def list_events_range_multi(start_date: str, end_date: str, calendar_ids: list[str] | None = None) -> list[dict]:
-    """指定された calendar 群から events を集めて1リストにする。重複 ID は最初のものを優先。"""
+    """全 slot × 指定 calendar 群から events を集めて1リストにする。
+
+    calendar_ids=None なら _all_visible_calendar_sources() で全 slot 自動列挙。
+    後方互換のため calendar_ids リストを渡された場合は slot 1 のみで処理する。
+    """
     from datetime import datetime, timezone, timedelta
-    service = _get_service()
     tz = timezone(timedelta(hours=9))
     start_dt = datetime.fromisoformat(start_date).replace(tzinfo=tz)
     end_dt = datetime.fromisoformat(end_date).replace(tzinfo=tz)
-    cal_ids = calendar_ids or (["primary"] + _extra_calendar_ids())
+
+    if calendar_ids is not None:
+        sources: list[tuple[int, str]] = [(1, cid) for cid in calendar_ids]
+    else:
+        sources = _all_visible_calendar_sources()
+
     seen: set[str] = set()
     out: list[dict] = []
-    for cid in cal_ids:
+    service_cache: dict[int, object] = {}
+
+    for slot, cid in sources:
+        if slot not in service_cache:
+            try:
+                service_cache[slot] = _get_service(slot)
+            except Exception:
+                service_cache[slot] = None
+        service = service_cache[slot]
+        if service is None:
+            continue
         try:
             events_result = service.events().list(
                 calendarId=cid,
@@ -392,14 +402,16 @@ def list_events_range_multi(start_date: str, end_date: str, calendar_ids: list[s
             continue
         for ev in events_result.get("items", []):
             evid = ev.get("id", "")
-            if evid in seen:
+            key = f"{slot}:{cid}:{evid}"
+            if key in seen:
                 continue
-            seen.add(evid)
+            seen.add(key)
             start = ev.get("start", {})
             end_ = ev.get("end", {})
             out.append({
                 "id": evid,
                 "calendar_id": cid,
+                "slot": slot,
                 "title": ev.get("summary", "(無題)"),
                 "start_iso": start.get("dateTime") or start.get("date") or "",
                 "end_iso": end_.get("dateTime") or end_.get("date") or "",

@@ -27,6 +27,7 @@
     { "name": "Daily Brief", "url": "/daily", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
     { "name": "Evening", "url": "/evening" },
     { "name": "Focus", "url": "/focus" },
+    { "name": "AI ランチャー", "url": "/launcher" },
     { "name": "AI 外注", "url": "/dispatcher" },
     { "name": "過去に聞く", "url": "/ask" }
   ],

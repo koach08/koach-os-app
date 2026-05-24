@@ -68,7 +68,7 @@ from routers import private_chat
 app.include_router(private_chat.router, prefix="/api")
 from routers import completions
 app.include_router(completions.router, prefix="/api")
-from routers import evening_brief, balance, focus_timer, weekly_review, dispatcher, rag_query, health_intake, kpi, voice_intake
+from routers import evening_brief, balance, focus_timer, weekly_review, dispatcher, rag_query, health_intake, kpi, voice_intake, ai_services
 app.include_router(evening_brief.router, prefix="/api")
 app.include_router(balance.router, prefix="/api")
 app.include_router(focus_timer.router, prefix="/api")
@@ -78,6 +78,7 @@ app.include_router(rag_query.router, prefix="/api")
 app.include_router(health_intake.router, prefix="/api")
 app.include_router(kpi.router, prefix="/api")
 app.include_router(voice_intake.router, prefix="/api")
+app.include_router(ai_services.router, prefix="/api")
 
 
 @app.get("/api/health")

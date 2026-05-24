@@ -56,6 +56,9 @@ class BacklogItem(BaseModel):
     notes: str = ""
     needs_ai: bool = False  # if True, AI tool recommendation will be requested
     done: bool = False
+    done_at: str | None = None
+    defer_until: str | None = None  # YYYY-MM-DD; その日まで Daily Brief から隠す
+    due_date: str | None = None  # YYYY-MM-DD; 締切
 
 
 class LifeBlock(BaseModel):
@@ -138,6 +141,55 @@ def delete_backlog(item_id: str):
     items = [it for it in items if it.get("id") != item_id]
     _write_json(BACKLOG_PATH, items)
     return {"ok": True}
+
+
+class DoneToggle(BaseModel):
+    done: bool = True
+
+
+@router.post("/productivity/backlog/{item_id}/done")
+def toggle_done(item_id: str, body: DoneToggle):
+    items = _load_backlog()
+    found = None
+    for it in items:
+        if it.get("id") == item_id:
+            it["done"] = body.done
+            it["done_at"] = now_jst().isoformat() if body.done else None
+            found = it
+            break
+    if not found:
+        raise HTTPException(404, "not found")
+    _write_json(BACKLOG_PATH, items)
+    return found
+
+
+class DeferReq(BaseModel):
+    days: int | None = None  # +N 日後
+    date: str | None = None  # 直接指定 YYYY-MM-DD; days より優先
+    clear: bool = False  # True で defer_until をクリア
+
+
+@router.post("/productivity/backlog/{item_id}/defer")
+def defer_backlog(item_id: str, body: DeferReq):
+    items = _load_backlog()
+    found = None
+    for it in items:
+        if it.get("id") == item_id:
+            if body.clear:
+                it["defer_until"] = None
+            elif body.date:
+                it["defer_until"] = body.date
+            elif body.days is not None:
+                target = now_jst().date() + timedelta(days=max(0, body.days))
+                it["defer_until"] = target.isoformat()
+            else:
+                raise HTTPException(400, "days か date か clear が必要")
+            found = it
+            break
+    if not found:
+        raise HTTPException(404, "not found")
+    _write_json(BACKLOG_PATH, items)
+    return found
 
 
 # ─── CRUD: life blocks ──────────────────────────────────────────────────────

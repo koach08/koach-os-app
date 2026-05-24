@@ -151,6 +151,28 @@ export default function DailyPage() {
     load(e);
   };
 
+  const deferBacklog = async (id: string, days: number) => {
+    try {
+      const r = await fetch(`/api/productivity/backlog/${id}/defer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ days }),
+      });
+      if (r.ok) load();
+    } catch {}
+  };
+
+  const shiftEvent = async (id: string, days: number) => {
+    try {
+      const r = await fetch(`/api/calendar/event/${id}/shift`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ days }),
+      });
+      if (r.ok) load();
+    } catch {}
+  };
+
   const toggleCompletion = async (
     kind: "calendar" | "backlog",
     refId: string,
@@ -478,10 +500,25 @@ export default function DailyPage() {
                           </div>
                           <div className="flex-1" style={{ opacity: done ? 0.45 : 1 }}>
                             <div
-                              className="text-sm"
+                              className="text-sm flex items-center gap-2"
                               style={{ textDecoration: done ? "line-through" : "none" }}
                             >
-                              {b.title}
+                              <span>{b.title}</span>
+                              {!done && (
+                                <span className="ml-auto flex gap-1">
+                                  {[1, 3, 7].map((d) => (
+                                    <button
+                                      key={d}
+                                      onClick={() => deferBacklog(b.id, d)}
+                                      title={`${d} 日後ろにずらす`}
+                                      className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                                      style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                                    >
+                                      +{d}d
+                                    </button>
+                                  ))}
+                                </span>
+                              )}
                             </div>
                             <div
                               className="text-[11px] mt-0.5"
@@ -562,11 +599,28 @@ export default function DailyPage() {
                             {formatTime(ev.start)}
                           </div>
                           <div className="flex-1 pt-0.5" style={{ opacity: done ? 0.45 : 1 }}>
-                            <div
-                              className="text-sm font-medium"
-                              style={{ textDecoration: done ? "line-through" : "none" }}
-                            >
-                              {ev.title}
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="text-sm font-medium flex-1"
+                                style={{ textDecoration: done ? "line-through" : "none" }}
+                              >
+                                {ev.title}
+                              </span>
+                              {!done && ev.id && (
+                                <span className="flex gap-1">
+                                  {[1, 7].map((d) => (
+                                    <button
+                                      key={d}
+                                      onClick={() => ev.id && shiftEvent(ev.id, d)}
+                                      title={`予定を ${d} 日後ろにずらす`}
+                                      className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                                      style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                                    >
+                                      +{d}d
+                                    </button>
+                                  ))}
+                                </span>
+                              )}
                             </div>
                             {ev.location && (
                               <div

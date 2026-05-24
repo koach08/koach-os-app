@@ -36,6 +36,9 @@ type BacklogItem = {
   notes: string;
   needs_ai: boolean;
   done: boolean;
+  defer_until?: string | null;
+  due_date?: string | null;
+  done_at?: string | null;
 };
 
 type LifeBlock = {
@@ -146,6 +149,26 @@ export default function CoachPage() {
   const deleteBacklog = async (id: string) => {
     await fetch(`${apiBase}/api/productivity/backlog/${id}`, { method: "DELETE" });
     setBacklog((b) => b.filter((x) => x.id !== id));
+  };
+
+  const deferBacklog = async (item: BacklogItem, days: number) => {
+    const r = await fetch(`${apiBase}/api/productivity/backlog/${item.id}/defer`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ days }),
+    });
+    if (r.ok) {
+      const updated = await r.json();
+      setBacklog((b) => b.map((x) => (x.id === item.id ? updated : x)));
+    }
+  };
+
+  const clearDefer = async (item: BacklogItem) => {
+    const r = await fetch(`${apiBase}/api/productivity/backlog/${item.id}/defer`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clear: true }),
+    });
+    if (r.ok) {
+      const updated = await r.json();
+      setBacklog((b) => b.map((x) => (x.id === item.id ? updated : x)));
+    }
   };
 
   const addLifeBlock = async () => {
@@ -374,8 +397,40 @@ export default function CoachPage() {
                     <span className="text-xs font-mono" style={{ color: "var(--color-text-muted)" }}>
                       {b.urgency === "high" ? "🔴" : b.urgency === "medium" ? "🟡" : "🟢"} {b.estimated_minutes}分
                     </span>
-                    <span className={`flex-1 text-sm ${b.done ? "line-through" : ""}`}>{b.title}</span>
+                    <span className={`flex-1 text-sm ${b.done ? "line-through" : ""}`}>
+                      {b.title}
+                      {b.defer_until && (
+                        <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: "rgba(245, 158, 11, 0.15)", color: "#f59e0b" }}>
+                          ⏭ {b.defer_until}
+                        </span>
+                      )}
+                    </span>
                     {b.needs_ai && <span className="text-xs">🤖 AI推奨</span>}
+                    {!b.done && (
+                      <span className="flex gap-1">
+                        {[1, 3, 7].map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => deferBacklog(b, d)}
+                            title={`${d} 日後ろにずらす`}
+                            className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                            style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                          >
+                            +{d}d
+                          </button>
+                        ))}
+                        {b.defer_until && (
+                          <button
+                            onClick={() => clearDefer(b)}
+                            title="ずらしを解除"
+                            className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                            style={{ background: "rgba(239, 68, 68, 0.1)", color: "#ef4444" }}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                    )}
                     <button onClick={() => deleteBacklog(b.id)} className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                       🗑
                     </button>

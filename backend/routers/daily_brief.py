@@ -182,9 +182,10 @@ def daily_brief(
     # 5. オープンタスク
     tasks = _open_tasks()
 
-    # 6. Coach バックログ（未完）
+    # 6. Coach バックログ（未完 + defer_until 過ぎたものだけ）
     try:
         from routers.productivity import _load_backlog
+        today_iso = now.strftime("%Y-%m-%d")
         backlog_items = [
             {
                 "id": b.get("id", ""),
@@ -193,9 +194,12 @@ def daily_brief(
                 "urgency": b.get("urgency", "medium"),
                 "estimated_minutes": b.get("estimated_minutes", 60),
                 "needs_ai": b.get("needs_ai", False),
+                "due_date": b.get("due_date"),
+                "defer_until": b.get("defer_until"),
             }
             for b in _load_backlog()
             if not b.get("done")
+            and (not b.get("defer_until") or b["defer_until"] <= today_iso)
         ]
     except Exception:
         backlog_items = []

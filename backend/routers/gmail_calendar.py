@@ -709,6 +709,49 @@ def calendar_delete_event(event_id: str, calendar_id: str = Query("primary"), sl
         _raise_gcal_error(e, "Calendar delete failed")
 
 
+class ShiftReq(BaseModel):
+    days: int  # +N で後ろにずらす、-N で前倒し
+    calendar_id: str = "primary"
+    slot: int = 1
+
+
+@router.post("/calendar/event/{event_id}/shift")
+def calendar_shift_event(event_id: str, body: ShiftReq):
+    """予定を ±N 日ずらす (start/end を維持して日付だけスライド)."""
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+    try:
+        from gcal import _get_service, update_event
+        from datetime import datetime as _dt, timedelta as _td
+        service = _get_service(body.slot)
+        ev = service.events().get(calendarId=body.calendar_id, eventId=event_id).execute()
+        is_all_day = "date" in (ev.get("start") or {})
+
+        def shift(iso: str) -> str:
+            if is_all_day:
+                d = _dt.fromisoformat(iso[:10]) + _td(days=body.days)
+                return d.strftime("%Y-%m-%d")
+            # tz 保つ
+            d = _dt.fromisoformat(iso.replace("Z", "+00:00")) + _td(days=body.days)
+            return d.isoformat()
+
+        new_start = shift(ev["start"].get("date") or ev["start"].get("dateTime"))
+        new_end = shift(ev["end"].get("date") or ev["end"].get("dateTime"))
+        result = update_event(
+            event_id,
+            calendar_id=body.calendar_id,
+            slot=body.slot,
+            start_iso=new_start,
+            end_iso=new_end,
+            all_day=is_all_day,
+        )
+        return {"ok": True, "id": result.get("id"), "shifted_days": body.days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_gcal_error(e, "Calendar shift failed")
+
+
 class EventPatch(BaseModel):
     title: str | None = None
     start_iso: str | None = None

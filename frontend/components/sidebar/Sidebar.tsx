@@ -35,6 +35,7 @@ const NAV_ITEMS = [
   { href: "/logs", label: "Logs", icon: "📋" },
   { href: "/review", label: "Review (週)", icon: "📊" },
   { href: "/memory", label: "Memory", icon: "🧠" },
+  { href: "/help", label: "使い方", icon: "📖" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
 ];
 

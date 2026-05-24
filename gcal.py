@@ -348,9 +348,51 @@ def list_events_range(start_date: str, end_date: str) -> list[dict]:
     return list_events_range_multi(start_date, end_date)
 
 
-def delete_event(event_id: str) -> None:
-    service = _get_service()
-    service.events().delete(calendarId="primary", eventId=event_id).execute()
+def delete_event(event_id: str, calendar_id: str = "primary", slot: int = 1) -> None:
+    service = _get_service(slot)
+    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+
+
+def update_event(
+    event_id: str,
+    *,
+    calendar_id: str = "primary",
+    slot: int = 1,
+    title: str | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+    all_day: bool | None = None,
+    timezone: str = "Asia/Tokyo",
+) -> dict:
+    """指定 event を patch する。None のフィールドは触らない。"""
+    service = _get_service(slot)
+    body: dict = {}
+    if title is not None:
+        body["summary"] = title
+    if description is not None:
+        body["description"] = description
+    if location is not None:
+        body["location"] = location
+    if start_iso is not None or end_iso is not None or all_day is not None:
+        # 時刻/日付の指定: 既存値を引いて、片方だけ patch でも崩れないようにする
+        current = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        cur_all_day = "date" in (current.get("start") or {})
+        is_all_day = all_day if all_day is not None else cur_all_day
+        s = start_iso if start_iso is not None else (
+            current["start"].get("date") if cur_all_day else current["start"].get("dateTime")
+        )
+        e_ = end_iso if end_iso is not None else (
+            current["end"].get("date") if cur_all_day else current["end"].get("dateTime")
+        )
+        if is_all_day:
+            body["start"] = {"date": (s or "")[:10]}
+            body["end"] = {"date": (e_ or s or "")[:10]}
+        else:
+            body["start"] = {"dateTime": s, "timeZone": timezone}
+            body["end"] = {"dateTime": e_, "timeZone": timezone}
+    return service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
 
 def _extra_calendar_ids() -> list[str]:

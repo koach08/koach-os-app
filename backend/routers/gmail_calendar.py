@@ -696,15 +696,57 @@ def calendar_range(start: str = Query(...), end: str = Query(...)):
 
 
 @router.delete("/calendar/event/{event_id}")
-def calendar_delete_event(event_id: str):
+def calendar_delete_event(event_id: str, calendar_id: str = Query("primary"), slot: int = Query(1)):
     if not is_configured():
         raise HTTPException(status_code=400, detail="Google integration not configured")
     try:
         from gcal import delete_event
-        delete_event(event_id)
+        delete_event(event_id, calendar_id=calendar_id, slot=slot)
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calendar delete failed: {e}")
+        _raise_gcal_error(e, "Calendar delete failed")
+
+
+class EventPatch(BaseModel):
+    title: str | None = None
+    start_iso: str | None = None
+    end_iso: str | None = None
+    description: str | None = None
+    location: str | None = None
+    all_day: bool | None = None
+    calendar_id: str = "primary"
+    slot: int = 1
+
+
+@router.patch("/calendar/event/{event_id}")
+def calendar_patch_event(event_id: str, patch: EventPatch):
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="Google integration not configured")
+    try:
+        from gcal import update_event
+        result = update_event(
+            event_id,
+            calendar_id=patch.calendar_id,
+            slot=patch.slot,
+            title=patch.title,
+            start_iso=patch.start_iso,
+            end_iso=patch.end_iso,
+            description=patch.description,
+            location=patch.location,
+            all_day=patch.all_day,
+        )
+        return {
+            "ok": True,
+            "id": result.get("id"),
+            "html_link": result.get("htmlLink", ""),
+            "summary": result.get("summary", ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_gcal_error(e, "Calendar update failed")
 
 
 class CreateEventRequest(BaseModel):

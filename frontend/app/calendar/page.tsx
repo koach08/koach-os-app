@@ -12,6 +12,8 @@ type Event = {
   description: string;
   html_link: string;
   event_type: "meeting" | "committee" | "deadline" | "default";
+  calendar_id?: string;
+  slot?: number;
 };
 
 const TYPE_COLOR: Record<string, string> = {
@@ -43,6 +45,8 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Event | null>(null);
+  const [editing, setEditing] = useState<Event | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [account, setAccount] = useState<{ calendar_id: string; summary: string; timezone: string } | null>(null);
 
@@ -122,13 +126,52 @@ export default function CalendarPage() {
 
   const handleDelete = async (ev: Event) => {
     if (!confirm(`「${ev.title}」を Google Calendar から削除しますか？`)) return;
+    const params = new URLSearchParams();
+    if (ev.calendar_id) params.set("calendar_id", ev.calendar_id);
+    if (ev.slot) params.set("slot", String(ev.slot));
+    const url = `${apiBase}/api/calendar/event/${ev.id}` + (params.toString() ? `?${params}` : "");
     try {
-      const r = await fetch(`${apiBase}/api/calendar/event/${ev.id}`, { method: "DELETE" });
+      const r = await fetch(url, { method: "DELETE" });
       if (!r.ok) throw new Error(await r.text());
       setEvents((prev) => prev.filter((e) => e.id !== ev.id));
       setSelected(null);
     } catch (e) {
       alert(`削除失敗: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const handleSaveEdit = async (orig: Event, patch: Partial<Event>) => {
+    setSavingEdit(true);
+    try {
+      const body: Record<string, unknown> = {
+        calendar_id: orig.calendar_id ?? "primary",
+        slot: orig.slot ?? 1,
+      };
+      if (patch.title !== undefined) body.title = patch.title;
+      if (patch.location !== undefined) body.location = patch.location;
+      if (patch.description !== undefined) body.description = patch.description;
+      if (patch.start_iso !== undefined) body.start_iso = patch.start_iso;
+      if (patch.end_iso !== undefined) body.end_iso = patch.end_iso;
+      if (patch.all_day !== undefined) body.all_day = patch.all_day;
+      const r = await fetch(`${apiBase}/api/calendar/event/${orig.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(t);
+      }
+      // 楽観的更新
+      setEvents((prev) =>
+        prev.map((e) => (e.id === orig.id ? { ...e, ...patch } as Event : e))
+      );
+      setSelected((s) => (s && s.id === orig.id ? ({ ...s, ...patch } as Event) : s));
+      setEditing(null);
+    } catch (e) {
+      alert(`保存失敗: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -420,6 +463,16 @@ base64 -i token.json | pbcopy
         </div>
       </div>
 
+      {/* Edit modal */}
+      {editing && (
+        <EditEventModal
+          event={editing}
+          saving={savingEdit}
+          onClose={() => setEditing(null)}
+          onSave={(patch) => handleSaveEdit(editing, patch)}
+        />
+      )}
+
       {/* Detail modal */}
       {selected && (
         <div
@@ -461,15 +514,22 @@ base64 -i token.json | pbcopy
               </div>
             </div>
             <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setEditing(selected)}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-medium"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                編集
+              </button>
               {selected.html_link && (
                 <a
                   href={selected.html_link}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex-1 text-center px-3 py-2 rounded-lg text-sm"
-                  style={{ background: "var(--color-accent)", color: "white" }}
+                  className="px-3 py-2 rounded-lg text-sm"
+                  style={{ background: "var(--color-surface-hover)", color: "var(--color-text)" }}
                 >
-                  Google Calendar で開く
+                  GCal
                 </a>
               )}
               <button
@@ -483,6 +543,176 @@ base64 -i token.json | pbcopy
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function toLocalInput(iso: string, allDay: boolean): string {
+  if (!iso) return "";
+  if (allDay) return iso.slice(0, 10);
+  // datetime-local 用に YYYY-MM-DDTHH:MM (秒なし、TZ なし)
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fromLocalInput(local: string, allDay: boolean): string {
+  if (!local) return "";
+  if (allDay) return local.slice(0, 10);
+  // ローカル時刻 → +09:00 オフセット付き ISO
+  const [datePart, timePart] = local.split("T");
+  const tz = -new Date().getTimezoneOffset();
+  const sign = tz >= 0 ? "+" : "-";
+  const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  const offset = `${sign}${pad(tz / 60)}:${pad(tz % 60)}`;
+  return `${datePart}T${timePart}:00${offset}`;
+}
+
+function EditEventModal({
+  event,
+  saving,
+  onClose,
+  onSave,
+}: {
+  event: Event;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (patch: Partial<Event>) => void;
+}) {
+  const [title, setTitle] = useState(event.title);
+  const [location, setLocation] = useState(event.location || "");
+  const [description, setDescription] = useState(event.description || "");
+  const [allDay, setAllDay] = useState(event.all_day);
+  const [start, setStart] = useState(toLocalInput(event.start_iso, event.all_day));
+  const [end, setEnd] = useState(toLocalInput(event.end_iso, event.all_day));
+
+  const submit = () => {
+    const patch: Partial<Event> = {};
+    if (title !== event.title) patch.title = title;
+    if (location !== (event.location || "")) patch.location = location;
+    if (description !== (event.description || "")) patch.description = description;
+    if (allDay !== event.all_day) patch.all_day = allDay;
+    const newStart = fromLocalInput(start, allDay);
+    const newEnd = fromLocalInput(end, allDay);
+    if (newStart && newStart !== event.start_iso) patch.start_iso = newStart;
+    if (newEnd && newEnd !== event.end_iso) patch.end_iso = newEnd;
+    if (Object.keys(patch).length === 0) {
+      onClose();
+      return;
+    }
+    onSave(patch);
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.6)" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rounded-2xl p-6 max-w-md w-full space-y-3"
+        style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold">予定を編集</h3>
+          <button onClick={onClose} className="text-xl" style={{ color: "var(--color-text-muted)" }}>
+            ×
+          </button>
+        </div>
+
+        <div>
+          <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
+            タイトル
+          </label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="w-full px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+          />
+        </div>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={allDay}
+            onChange={(e) => {
+              const v = e.target.checked;
+              setAllDay(v);
+              setStart(toLocalInput(start ? fromLocalInput(start, false) : event.start_iso, v));
+              setEnd(toLocalInput(end ? fromLocalInput(end, false) : event.end_iso, v));
+            }}
+          />
+          終日
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
+              開始
+            </label>
+            <input
+              type={allDay ? "date" : "datetime-local"}
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm"
+              style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
+              終了
+            </label>
+            <input
+              type={allDay ? "date" : "datetime-local"}
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="w-full px-3 py-2 rounded text-sm"
+              style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
+            場所
+          </label>
+          <input
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            className="w-full px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+          />
+        </div>
+
+        <div>
+          <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
+            メモ
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 rounded text-sm"
+            style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-full text-sm" style={{ color: "var(--color-text-muted)" }}>
+            キャンセル
+          </button>
+          <button
+            onClick={submit}
+            disabled={saving}
+            className="px-5 py-2 rounded-full text-sm font-medium disabled:opacity-50"
+            style={{ background: "var(--color-accent)", color: "white" }}
+          >
+            {saving ? "保存中..." : "保存"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -19,6 +19,7 @@ const KIND_META: Record<string, { emoji: string; label: string }> = {
 
 export function VoiceCapture({ onSaved }: { onSaved?: () => void }) {
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"voice" | "text">("voice");
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [text, setText] = useState("");
@@ -118,6 +119,27 @@ export function VoiceCapture({ onSaved }: { onSaved?: () => void }) {
     }
   };
 
+  const classifyTyped = async () => {
+    const t = text.trim();
+    if (!t) return;
+    setProcessing(true);
+    setError(null);
+    setClassified(null);
+    try {
+      const r = await fetch("/api/voice/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: t }),
+      });
+      if (!r.ok) throw new Error("classify " + r.status);
+      setClassified(await r.json());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
   return (
     <>
       <button
@@ -145,13 +167,38 @@ export function VoiceCapture({ onSaved }: { onSaved?: () => void }) {
             style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold">音声で捕捉</h3>
+              <h3 className="font-semibold">{mode === "voice" ? "音声で捕捉" : "タイプで捕捉"}</h3>
               <button onClick={close} className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                 閉じる
               </button>
             </div>
 
-            {!text && !processing && (
+            {!classified && !processing && (
+              <div className="flex gap-2">
+                {(["voice", "text"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => {
+                      if (recording) return;
+                      setMode(m);
+                      setText("");
+                      setError(null);
+                    }}
+                    disabled={recording}
+                    className="px-3 py-1.5 rounded-full text-xs disabled:opacity-50"
+                    style={{
+                      background: mode === m ? "var(--color-text)" : "transparent",
+                      color: mode === m ? "var(--color-background)" : "var(--color-text-muted)",
+                      border: "1px solid var(--color-border)",
+                    }}
+                  >
+                    {m === "voice" ? "🎤 音声" : "⌨️ タイプ"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {mode === "voice" && !text && !processing && (
               <div className="text-center py-6">
                 <button
                   onClick={recording ? stopRec : startRec}
@@ -173,17 +220,47 @@ export function VoiceCapture({ onSaved }: { onSaved?: () => void }) {
               </div>
             )}
 
+            {mode === "text" && !classified && !processing && (
+              <div className="space-y-2">
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={4}
+                  autoFocus
+                  placeholder="例: 明日 EGAKU の LP コピー直す  /  さっき学生にメールしたの忘れないように"
+                  className="w-full px-3 py-2 rounded text-sm"
+                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") classifyTyped();
+                  }}
+                />
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                    Cmd/Ctrl + Enter で分類
+                  </span>
+                  <button
+                    onClick={classifyTyped}
+                    disabled={!text.trim()}
+                    className="px-4 py-1.5 rounded-full text-xs font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent)", color: "white" }}
+                  >
+                    AI に振り分けさせる
+                  </button>
+                </div>
+              </div>
+            )}
+
             {processing && (
               <div className="text-center py-8">
                 <div className="text-sm">文字起こし + 分類中...</div>
               </div>
             )}
 
-            {text && !processing && (
+            {classified && !processing && (
               <>
                 <div>
                   <label className="block text-[10px] mb-1 uppercase" style={{ color: "var(--color-text-muted)" }}>
-                    文字起こし
+                    {mode === "voice" ? "文字起こし" : "本文"}
                   </label>
                   <textarea
                     value={text}
@@ -252,12 +329,12 @@ export function VoiceCapture({ onSaved }: { onSaved?: () => void }) {
                   <button
                     onClick={() => {
                       reset();
-                      startRec();
+                      if (mode === "voice") startRec();
                     }}
                     className="text-xs"
                     style={{ color: "var(--color-text-muted)" }}
                   >
-                    もう一度録音
+                    {mode === "voice" ? "もう一度録音" : "やり直す"}
                   </button>
                   <div className="flex gap-2">
                     <button

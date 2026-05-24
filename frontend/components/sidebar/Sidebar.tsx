@@ -24,6 +24,7 @@ const NAV_ITEMS = [
   { href: "/documents", label: "Docs→Tasks", icon: "📄" },
   { href: "/training", label: "Training", icon: "💪" },
   { href: "/launcher", label: "AI ランチャー", icon: "🚀" },
+  { href: "/personas", label: "多視点で考える", icon: "🎭" },
   { href: "/extract", label: "動画→構造化", icon: "🎬" },
   { href: "/dispatcher", label: "AI 外注 (指示書)", icon: "📨" },
   { href: "/ask", label: "過去に聞く", icon: "🔎" },

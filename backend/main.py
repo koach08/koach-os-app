@@ -81,6 +81,9 @@ app.include_router(voice_intake.router, prefix="/api")
 app.include_router(ai_services.router, prefix="/api")
 from routers import media_extract
 app.include_router(media_extract.router, prefix="/api")
+from routers import personas, persona_chat
+app.include_router(personas.router, prefix="/api")
+app.include_router(persona_chat.router, prefix="/api")
 
 
 @app.get("/api/health")

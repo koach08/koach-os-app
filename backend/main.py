@@ -84,6 +84,8 @@ app.include_router(media_extract.router, prefix="/api")
 from routers import personas, persona_chat
 app.include_router(personas.router, prefix="/api")
 app.include_router(persona_chat.router, prefix="/api")
+from routers import patterns
+app.include_router(patterns.router, prefix="/api")
 
 
 @app.get("/api/health")

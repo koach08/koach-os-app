@@ -2,6 +2,14 @@
 
 import { useEffect, useState } from "react";
 
+type PatternReport = {
+  generated_at: string;
+  engine_used: string;
+  data_summary: Record<string, number>;
+  report: string;
+  cached?: boolean;
+};
+
 type Category =
   | "career" | "research" | "creative" | "family" | "health"
   | "learning" | "side_project" | "admin" | "rest" | "other";
@@ -75,6 +83,24 @@ export default function CoachPage() {
     id: "", title: "", weekday: 0, start_hm: "17:00", end_hm: "18:30", category: "family",
   });
   const [showLifeForm, setShowLifeForm] = useState(false);
+  const [patternReport, setPatternReport] = useState<PatternReport | null>(null);
+  const [patternLoading, setPatternLoading] = useState(false);
+  const [patternError, setPatternError] = useState<string | null>(null);
+
+  const loadPatterns = (force = false) => {
+    setPatternLoading(true);
+    setPatternError(null);
+    const url = force ? "/api/patterns/regenerate" : "/api/patterns?engine=claude";
+    const method = force ? "POST" : "GET";
+    fetch(url, { method })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      })
+      .then(setPatternReport)
+      .catch((e: Error) => setPatternError(e.message))
+      .finally(() => setPatternLoading(false));
+  };
 
   const loadAll = async () => {
     try {
@@ -89,7 +115,11 @@ export default function CoachPage() {
     }
   };
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    loadAll();
+    loadPatterns(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addBacklog = async () => {
     if (!newItem.title.trim()) return;
@@ -253,6 +283,68 @@ export default function CoachPage() {
               {error}
             </div>
           )}
+
+          {/* あなたのパターン */}
+          <div
+            className="rounded-2xl p-6"
+            style={{
+              background: "linear-gradient(135deg, rgba(168, 85, 247, 0.10) 0%, rgba(59, 130, 246, 0.04) 100%)",
+              border: "1px solid rgba(168, 85, 247, 0.25)",
+            }}
+          >
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <span>🔭</span>
+                <span>あなたのパターン (過去 30 日)</span>
+              </h2>
+              <div className="flex items-center gap-2">
+                {patternReport && (
+                  <span className="text-[10px] font-mono" style={{ color: "var(--color-text-muted)" }}>
+                    {new Date(patternReport.generated_at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {patternReport.cached && " (cache)"}
+                  </span>
+                )}
+                <button
+                  onClick={() => loadPatterns(true)}
+                  disabled={patternLoading}
+                  className="px-3 py-1 rounded-full text-xs disabled:opacity-50"
+                  style={{ background: "rgba(168, 85, 247, 0.2)", color: "#a855f7" }}
+                >
+                  {patternLoading ? "分析中..." : "再分析"}
+                </button>
+              </div>
+            </div>
+
+            {patternError && (
+              <div className="text-xs mb-2" style={{ color: "var(--color-red)" }}>
+                {patternError}
+              </div>
+            )}
+
+            {patternLoading && !patternReport && (
+              <div className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                30 日分のログを集計して分析中... (30 秒前後)
+              </div>
+            )}
+
+            {patternReport && (
+              <>
+                <div className="text-sm whitespace-pre-wrap leading-[1.85]" style={{ color: "var(--color-text)" }}>
+                  {patternReport.report}
+                </div>
+                <div className="mt-4 pt-3 flex flex-wrap gap-2 text-[10px] font-mono" style={{ borderTop: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+                  <span>完了 {patternReport.data_summary.completions}</span>
+                  <span>集中 {patternReport.data_summary.focus_sessions}</span>
+                  <span>決定 {patternReport.data_summary.decisions}</span>
+                  <span>失敗 {patternReport.data_summary.failures}</span>
+                  <span>private {patternReport.data_summary.private_lines}</span>
+                  <span>memo {patternReport.data_summary.memos}</span>
+                  <span>cal {patternReport.data_summary.cal_events}</span>
+                  <span>backlog残 {patternReport.data_summary.backlog_open}</span>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Backlog */}
           <div className="rounded-2xl p-6" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>

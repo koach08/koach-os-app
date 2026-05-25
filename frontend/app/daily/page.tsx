@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { VoiceCapture } from "@/components/VoiceCapture";
 
 type Event = {
   id?: string;
@@ -143,6 +142,9 @@ export default function DailyPage() {
     fetch("/api/kpi").then((r) => r.ok ? r.json() : null).then((d) => d && setKpiMetrics((d.metrics ?? []).slice(0, 4))).catch(() => {});
     fetch("/api/calendar/family?days_ahead=2").then((r) => r.ok ? r.json() : null).then((d) => d && setFamily(d.events ?? [])).catch(() => {});
     fetch("/api/health-data/state-hint").then((r) => r.ok ? r.json() : null).then((d) => d && setHealthHint(d)).catch(() => {});
+    const onCaptured = () => load();
+    window.addEventListener("koach-capture-saved", onCaptured);
+    return () => window.removeEventListener("koach-capture-saved", onCaptured);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -221,12 +223,7 @@ export default function DailyPage() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto relative">
-      {/* Floating voice capture button */}
-      <div className="fixed bottom-6 right-6 z-40">
-        <VoiceCapture onSaved={() => load()} />
-      </div>
-
+    <div className="flex-1 overflow-y-auto relative pb-32">
       {/* Hero header — full bleed gradient */}
       <div
         className="px-8 pt-12 pb-10 relative overflow-hidden"
@@ -842,6 +839,7 @@ export default function DailyPage() {
           )}
         </div>
       </div>
+
     </div>
   );
 }

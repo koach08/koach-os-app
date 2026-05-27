@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { href: "/gmail-sync", label: "予定を追加", icon: "📅" },
   { href: "/documents", label: "Docs→Tasks", icon: "📄" },
   { href: "/training", label: "Training", icon: "💪" },
+  { href: "/agent", label: "Agent", icon: "🤖" },
   { href: "/launcher", label: "AI ランチャー", icon: "🚀" },
   { href: "/personas", label: "多視点で考える", icon: "🎭" },
   { href: "/extract", label: "動画→構造化", icon: "🎬" },

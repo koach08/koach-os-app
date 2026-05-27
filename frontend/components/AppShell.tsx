@@ -19,6 +19,7 @@ const NO_CAPTURE_PATHS = new Set([
   "/help",
   "/settings",
   "/share",
+  "/agent",
 ]);
 
 export function AppShell({ children }: { children: React.ReactNode }) {

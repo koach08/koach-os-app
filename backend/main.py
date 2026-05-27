@@ -86,6 +86,8 @@ app.include_router(personas.router, prefix="/api")
 app.include_router(persona_chat.router, prefix="/api")
 from routers import patterns
 app.include_router(patterns.router, prefix="/api")
+from routers import agent
+app.include_router(agent.router, prefix="/api")
 
 
 @app.get("/api/health")

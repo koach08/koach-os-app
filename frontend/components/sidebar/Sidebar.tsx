@@ -70,15 +70,15 @@ export function Sidebar({ domain, onDomainChange, isOpen, onToggle }: Props) {
         <DomainSelector domain={domain} onChange={onDomainChange} />
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 p-2 space-y-1">
+      {/* Navigation — overflow-y-auto + min-h-0 で flex 親内でスクロール可能に */}
+      <nav className="flex-1 min-h-0 overflow-y-auto p-2 space-y-0.5">
         {NAV_ITEMS.map((item) => {
           const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
             <Link
               key={item.href}
               href={item.href}
-              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors"
               style={{
                 background: active ? "var(--color-accent)" : "transparent",
                 color: active ? "white" : "var(--color-text-muted)",

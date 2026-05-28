@@ -576,11 +576,14 @@ def _parse_message(msg: dict) -> dict:
 
     return {
         "id": msg.get("id", ""),
+        "thread_id": msg.get("threadId", ""),
         "from": headers.get("from", ""),
+        "to": headers.get("to", ""),
         "subject": headers.get("subject", "(no subject)"),
         "date": headers.get("date", ""),
         "snippet": msg.get("snippet", "")[:200],
         "body": body_text,
+        "labels": msg.get("labelIds", []),
     }
 
 

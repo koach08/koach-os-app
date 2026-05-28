@@ -88,6 +88,9 @@ from routers import patterns
 app.include_router(patterns.router, prefix="/api")
 from routers import agent
 app.include_router(agent.router, prefix="/api")
+from routers import email_watch, scheduling
+app.include_router(email_watch.router, prefix="/api")
+app.include_router(scheduling.router, prefix="/api")
 
 
 @app.get("/api/health")

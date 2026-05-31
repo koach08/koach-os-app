@@ -401,6 +401,20 @@ def list_projects():
     }
 
 
+@router.get("/projects/candidates")
+def list_candidates_route():
+    """※ {project_id} catch-all より前に置く必要あり (FastAPI は登録順マッチ)"""
+    candidates = _read_candidates()
+    by_source: dict[str, list] = {}
+    for c in candidates:
+        by_source.setdefault(c.get("source", "?"), []).append(c)
+    return {
+        "candidates": candidates,
+        "by_source": by_source,
+        "count": len(candidates),
+    }
+
+
 @router.get("/projects/{project_id}")
 def get_project(project_id: str):
     data = _read()
@@ -848,19 +862,6 @@ def discover_gmail(days: int = 30, slot: int = 1):
         "added": len(new_candidates),
         "total_candidates": len(existing_candidates),
         "scanned_emails": len(emails),
-    }
-
-
-@router.get("/projects/candidates")
-def list_candidates():
-    candidates = _read_candidates()
-    by_source: dict[str, list] = {}
-    for c in candidates:
-        by_source.setdefault(c.get("source", "?"), []).append(c)
-    return {
-        "candidates": candidates,
-        "by_source": by_source,
-        "count": len(candidates),
     }
 
 

@@ -148,7 +148,7 @@ def tool_analyze_image(prompt: str, file_id: str | None = None, url: str | None 
         return "(file_id or url required)"
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model=DEFAULT_MODELS.get("claude", "claude-opus-4-6"),
+        model=DEFAULT_MODELS.get("claude", "claude-opus-4-8"),
         max_tokens=2000,
         messages=[{
             "role": "user",
@@ -515,7 +515,7 @@ def agent_chat(req: AgentChatReq):
     if not api_key:
         raise HTTPException(500, "ANTHROPIC_API_KEY not set")
     client = anthropic.Anthropic(api_key=api_key)
-    model = req.engine_model or DEFAULT_MODELS.get("claude", "claude-opus-4-6")
+    model = req.engine_model or DEFAULT_MODELS.get("claude", "claude-opus-4-8")
 
     # 添付ファイル情報を user メッセージに付ける (file_id 表で渡す)
     attach_note = ""

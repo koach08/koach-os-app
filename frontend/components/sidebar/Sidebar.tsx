@@ -96,7 +96,7 @@ export function Sidebar({ domain, onDomainChange, isOpen, onToggle }: Props) {
 
       {/* Footer */}
       <div className="p-3 text-xs" style={{ color: "var(--color-text-muted)", borderTop: "1px solid var(--color-border)" }}>
-        Opus 4.6 + GPT-5.4
+        Opus 4.8 + GPT-5.5
       </div>
     </aside>
   );

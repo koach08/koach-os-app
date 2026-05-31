@@ -16,6 +16,11 @@ build/
 # Streamlit secrets
 .streamlit/secrets.toml
 
+# Google OAuth (NEVER commit)
+credentials.json
+token.json
+token_*.json
+
 # OS files
 .DS_Store
 Thumbs.db

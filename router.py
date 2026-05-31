@@ -100,8 +100,8 @@ TASK_TYPE_KEYWORDS = {
 
 # Default models per engine
 DEFAULT_MODELS = {
-    "claude": "claude-opus-4-6",
-    "gpt": "gpt-5.4",
+    "claude": "claude-opus-4-8",
+    "gpt": "gpt-5.5",
     "grok": "grok-4",
     "gemini": "gemini-2.5-pro",
     "venice": "venice-uncensored",
@@ -112,12 +112,14 @@ DEFAULT_MODELS = {
 # Available models for settings UI
 AVAILABLE_MODELS = {
     "claude": [
-        ("claude-opus-4-6", "Claude Opus 4.6 (最高性能 $5/$25)"),
+        ("claude-opus-4-8", "Claude Opus 4.8 (最新・最高性能 $5/$25)"),
+        ("claude-opus-4-7", "Claude Opus 4.7 (前世代 $5/$25)"),
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 (バランス $3/$15)"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 (高速・低コスト $1/$5)"),
     ],
     "gpt": [
-        ("gpt-5.4", "GPT-5.4 (最新・最高性能 $2.50/$15)"),
+        ("gpt-5.5", "GPT-5.5 (最新・最高性能)"),
+        ("gpt-5.4", "GPT-5.4 (前世代 $2.50/$15)"),
         ("gpt-5.2", "GPT-5.2 (コード・エージェント向け $1.75/$14)"),
         ("gpt-5", "GPT-5 (コスパ良好 $1.25/$10)"),
         ("gpt-4.1", "GPT-4.1 (非推論・安定 $2.00/$8)"),

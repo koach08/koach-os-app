@@ -245,7 +245,7 @@ export function InputBar({ onSend, isLoading }: Props) {
         </button>
       </div>
       <p className="text-center text-xs mt-2" style={{ color: "var(--color-text-muted)" }}>
-        Koach OS v2 — Opus 4.6 + GPT-5.4 · Shift+Enter for new line
+        Koach OS v2 — Opus 4.8 + GPT-5.5 · Shift+Enter for new line
       </p>
     </div>
   );

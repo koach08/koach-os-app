@@ -40,6 +40,8 @@ from router import call_ai, DEFAULT_MODELS
 router = APIRouter()
 
 PROJECTS_FILE = DATA_DIR / "projects.json"
+CANDIDATES_FILE = DATA_DIR / "project_candidates.json"
+REJECTED_FILE = DATA_DIR / "project_candidates_rejected.json"
 
 
 class Project(BaseModel):
@@ -78,6 +80,33 @@ def _read() -> dict:
 def _write(data: dict):
     data["updated_at"] = timestamp_jst()
     PROJECTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_candidates() -> list[dict]:
+    if not CANDIDATES_FILE.exists():
+        return []
+    try:
+        return json.loads(CANDIDATES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _write_candidates(items: list[dict]):
+    CANDIDATES_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_rejected() -> list[str]:
+    """却下済み candidate id のリスト (再提案を防ぐ)"""
+    if not REJECTED_FILE.exists():
+        return []
+    try:
+        return json.loads(REJECTED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _write_rejected(ids: list[str]):
+    REJECTED_FILE.write_text(json.dumps(ids, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 SEED_PROJECTS: list[dict] = [
@@ -617,3 +646,309 @@ def recommend(req: RecommendReq):
         "recommendation": out,
         "considered": [{"id": p["id"], "name": p["name"], "priority": p.get("priority", 3)} for p in active],
     }
+
+
+# ─── Discovery: 未登録プロジェクト候補の提案 ──────────────────────────────
+import re
+import hashlib
+
+
+def _candidate_id(source: str, key: str) -> str:
+    """source + key からハッシュで安定 ID 生成"""
+    h = hashlib.md5(f"{source}::{key}".encode()).hexdigest()[:12]
+    return f"cand_{h}"
+
+
+def _already_known(candidate: dict, projects: list[dict]) -> bool:
+    """既登録 project と被るか判定 (github_url / local_path / name の lower 一致)"""
+    g = (candidate.get("github_url") or "").lower().rstrip("/").rstrip(".git")
+    l = (candidate.get("local_path") or "").lower()
+    n = (candidate.get("name") or "").lower()
+    for p in projects:
+        pg = (p.get("github_url") or "").lower().rstrip("/").rstrip(".git")
+        pl = (p.get("local_path") or "").lower()
+        pn = (p.get("name") or "").lower()
+        if g and pg and g == pg:
+            return True
+        if l and pl and l == pl:
+            return True
+        if n and pn and n == pn:
+            return True
+    return False
+
+
+class LocalRepoCandidate(BaseModel):
+    """ローカルスクリプトから渡されるディレクトリスキャン結果"""
+    local_path: str
+    name: str  # ディレクトリ名等
+    github_url: str = ""
+    last_commit_date: str = ""
+    last_commit_message: str = ""
+    file_count: int = 0
+    has_package_json: bool = False
+    has_pyproject: bool = False
+    has_cargo_toml: bool = False
+    notes: str = ""
+
+
+class LocalDiscoveryBatch(BaseModel):
+    items: list[LocalRepoCandidate]
+
+
+@router.post("/projects/discover/local")
+def discover_local(batch: LocalDiscoveryBatch):
+    """ローカルスクリプトが ~/Desktop 配下を scan した結果を受けて候補化。
+    既登録 / 却下済み と被るものは除外。
+    """
+    data = _read()
+    projects = data.get("projects", [])
+    existing_candidates = _read_candidates()
+    rejected = set(_read_rejected())
+    existing_keys = {c.get("id") for c in existing_candidates}
+
+    new_candidates = []
+    now_iso = now_jst().isoformat()
+    for it in batch.items:
+        cid = _candidate_id("local", it.local_path or it.name)
+        if cid in rejected:
+            continue
+        if cid in existing_keys:
+            # 既候補は last_commit_date 等を更新
+            for c in existing_candidates:
+                if c.get("id") == cid:
+                    c.update({
+                        "last_commit_date": it.last_commit_date,
+                        "last_commit_message": it.last_commit_message,
+                        "discovered_at": c.get("discovered_at", now_iso),
+                        "updated_at": now_iso,
+                    })
+                    break
+            continue
+        candidate = it.model_dump()
+        candidate["github_url"] = it.github_url
+        if _already_known(candidate, projects):
+            continue
+        new_candidates.append({
+            "id": cid,
+            "source": "local",
+            "name": it.name,
+            "local_path": it.local_path,
+            "github_url": it.github_url,
+            "last_commit_date": it.last_commit_date,
+            "last_commit_message": it.last_commit_message,
+            "file_count": it.file_count,
+            "stack_hint": _stack_hint(it),
+            "notes": it.notes,
+            "discovered_at": now_iso,
+            "updated_at": now_iso,
+        })
+
+    if new_candidates:
+        existing_candidates.extend(new_candidates)
+    _write_candidates(existing_candidates)
+    return {
+        "ok": True,
+        "added": len(new_candidates),
+        "total_candidates": len(existing_candidates),
+    }
+
+
+def _stack_hint(it: LocalRepoCandidate) -> str:
+    """簡易スタック推定"""
+    hints = []
+    if it.has_package_json:
+        hints.append("Node.js")
+    if it.has_pyproject:
+        hints.append("Python")
+    if it.has_cargo_toml:
+        hints.append("Rust")
+    return " / ".join(hints) or "unknown"
+
+
+@router.post("/projects/discover/gmail")
+def discover_gmail(days: int = 30, slot: int = 1):
+    """Gmail を scan して GitHub / Vercel / Railway / Stripe 等の通知から
+    未登録プロジェクト/サービスを候補化。
+    """
+    try:
+        from gcal import list_recent_emails
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"gcal import failed: {e}")
+
+    try:
+        emails = list_recent_emails(days=days, max_results=200, slot=slot)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gmail fetch failed: {e}")
+
+    data = _read()
+    projects = data.get("projects", [])
+    existing_candidates = _read_candidates()
+    rejected = set(_read_rejected())
+    existing_keys = {c.get("id") for c in existing_candidates}
+
+    new_candidates = []
+    now_iso = now_jst().isoformat()
+
+    # シンプルなパターンマッチング
+    SOURCES = [
+        # (sender pattern, name extraction regex, service label)
+        (r"notifications@github\.com", r"\[([^\]]+/[^\]]+)\]", "github"),
+        (r"@vercel\.com", r"Project\s+\"?([a-zA-Z0-9_-]+)\"?", "vercel"),
+        (r"@railway\.(app|com)", r"service\s+([a-zA-Z0-9_-]+)", "railway"),
+        (r"@stripe\.com", r"product\s+\"?([^\"]+)\"?", "stripe"),
+        (r"@netlify\.com", r"site\s+([a-zA-Z0-9_-]+)", "netlify"),
+        (r"@supabase\.(io|com)", r"project\s+([a-zA-Z0-9_-]+)", "supabase"),
+    ]
+
+    seen_in_run = set()
+    for em in emails:
+        sender = em.get("from", "")
+        subject = em.get("subject", "")
+        snippet = em.get("snippet", "")
+        text = subject + " " + snippet
+
+        for sender_pat, extract_pat, label in SOURCES:
+            if not re.search(sender_pat, sender, re.IGNORECASE):
+                continue
+            m = re.search(extract_pat, text, re.IGNORECASE)
+            if not m:
+                continue
+            name = m.group(1).strip()
+            if len(name) < 2 or len(name) > 80:
+                continue
+            cid = _candidate_id(f"gmail-{label}", name.lower())
+            if cid in rejected or cid in existing_keys or cid in seen_in_run:
+                continue
+            seen_in_run.add(cid)
+
+            candidate = {"name": name, "github_url": ""}
+            if label == "github":
+                candidate["github_url"] = f"https://github.com/{name}"
+            if _already_known(candidate, projects):
+                continue
+
+            new_candidates.append({
+                "id": cid,
+                "source": f"gmail/{label}",
+                "name": name,
+                "local_path": "",
+                "github_url": candidate.get("github_url", ""),
+                "last_email_subject": subject[:160],
+                "last_email_from": sender[:80],
+                "last_email_date": em.get("date", ""),
+                "discovered_at": now_iso,
+                "updated_at": now_iso,
+            })
+            break  # 1メール 1候補
+
+    existing_candidates.extend(new_candidates)
+    _write_candidates(existing_candidates)
+    return {
+        "ok": True,
+        "added": len(new_candidates),
+        "total_candidates": len(existing_candidates),
+        "scanned_emails": len(emails),
+    }
+
+
+@router.get("/projects/candidates")
+def list_candidates():
+    candidates = _read_candidates()
+    by_source: dict[str, list] = {}
+    for c in candidates:
+        by_source.setdefault(c.get("source", "?"), []).append(c)
+    return {
+        "candidates": candidates,
+        "by_source": by_source,
+        "count": len(candidates),
+    }
+
+
+class ApproveReq(BaseModel):
+    """候補を承認する時に追加で渡せる情報 (デフォルトは候補から推定)"""
+    id: str = ""  # project_id として使う slug (省略時は candidate の name から自動生成)
+    category: str = "saas"
+    status: str = "active"
+    priority: int = 3
+    one_liner: str = ""
+    next_action: str = ""
+
+
+def _slugify(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9-]+", "-", name.lower())
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s[:40] or "project"
+
+
+@router.post("/projects/candidates/{candidate_id}/approve")
+def approve_candidate(candidate_id: str, req: ApproveReq):
+    candidates = _read_candidates()
+    cand = next((c for c in candidates if c.get("id") == candidate_id), None)
+    if not cand:
+        raise HTTPException(status_code=404, detail="candidate not found")
+
+    data = _read()
+    projects = data.get("projects", [])
+    project_id = req.id or _slugify(cand.get("name", "project"))
+
+    # id 衝突回避
+    base = project_id
+    n = 2
+    existing_ids = {p.get("id") for p in projects}
+    while project_id in existing_ids:
+        project_id = f"{base}-{n}"
+        n += 1
+
+    new_project = {
+        "id": project_id,
+        "name": cand.get("name", project_id),
+        "category": req.category,
+        "status": req.status,
+        "priority": req.priority,
+        "github_url": cand.get("github_url", ""),
+        "live_url": "",
+        "local_path": cand.get("local_path", ""),
+        "memory_ref": "",
+        "one_liner": req.one_liner or cand.get("last_email_subject", "") or cand.get("last_commit_message", ""),
+        "next_action": req.next_action,
+        "last_touched": cand.get("last_commit_date", "")[:10],
+        "notes": f"Discovered from {cand.get('source')} on {cand.get('discovered_at','')[:10]}",
+        "last_commit_sha": "",
+        "last_commit_message": cand.get("last_commit_message", ""),
+        "last_commit_date": cand.get("last_commit_date", ""),
+        "last_commit_author": "",
+        "uncommitted_changes": 0,
+        "sync_source": "discovery",
+        "sync_at": now_jst().isoformat(),
+    }
+    projects.append(new_project)
+    data["projects"] = projects
+    _write(data)
+
+    # candidate から除去
+    candidates = [c for c in candidates if c.get("id") != candidate_id]
+    _write_candidates(candidates)
+
+    return {"ok": True, "project": new_project}
+
+
+@router.post("/projects/candidates/{candidate_id}/reject")
+def reject_candidate(candidate_id: str):
+    candidates = _read_candidates()
+    cand = next((c for c in candidates if c.get("id") == candidate_id), None)
+    if not cand:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    candidates = [c for c in candidates if c.get("id") != candidate_id]
+    _write_candidates(candidates)
+    rejected = _read_rejected()
+    if candidate_id not in rejected:
+        rejected.append(candidate_id)
+        _write_rejected(rejected)
+    return {"ok": True, "rejected": candidate_id}
+
+
+@router.delete("/projects/candidates/clear-rejected")
+def clear_rejected():
+    """却下リストをリセット (もう一度提案させたい時用)"""
+    _write_rejected([])
+    return {"ok": True}

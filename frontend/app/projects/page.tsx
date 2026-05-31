@@ -16,6 +16,27 @@ type Project = {
   next_action?: string;
   last_touched?: string;
   notes?: string;
+  last_commit_sha?: string;
+  last_commit_message?: string;
+  last_commit_date?: string;
+  uncommitted_changes?: number;
+  sync_at?: string;
+  sync_source?: string;
+};
+
+type Candidate = {
+  id: string;
+  source: string;
+  name: string;
+  local_path?: string;
+  github_url?: string;
+  last_commit_date?: string;
+  last_commit_message?: string;
+  last_email_subject?: string;
+  last_email_from?: string;
+  last_email_date?: string;
+  stack_hint?: string;
+  discovered_at?: string;
 };
 
 type ListResp = {
@@ -82,6 +103,9 @@ export default function ProjectsPage() {
   const [recLoading, setRecLoading] = useState(false);
   const [recommendation, setRecommendation] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [showCandidates, setShowCandidates] = useState(true);
+  const [candLoading, setCandLoading] = useState(false);
 
   const load = () => {
     fetch("/api/projects")
@@ -90,9 +114,55 @@ export default function ProjectsPage() {
       .catch((e) => setError((e as Error).message));
   };
 
+  const loadCandidates = () => {
+    fetch("/api/projects/candidates")
+      .then((r) => r.json())
+      .then((j) => setCandidates(j.candidates || []))
+      .catch(() => {});
+  };
+
   useEffect(() => {
     load();
+    loadCandidates();
   }, []);
+
+  const approveCandidate = async (cand: Candidate) => {
+    const res = await fetch(`/api/projects/candidates/${encodeURIComponent(cand.id)}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "saas", status: "active", priority: 3 }),
+    });
+    if (res.ok) {
+      loadCandidates();
+      load();
+    } else {
+      alert(`承認失敗: ${await res.text()}`);
+    }
+  };
+
+  const rejectCandidate = async (cand: Candidate) => {
+    if (!confirm(`「${cand.name}」を却下しますか? (二度と提案されません)`)) return;
+    await fetch(`/api/projects/candidates/${encodeURIComponent(cand.id)}/reject`, { method: "POST" });
+    loadCandidates();
+  };
+
+  const scanGmail = async () => {
+    setCandLoading(true);
+    try {
+      const res = await fetch("/api/projects/discover/gmail?days=30&slot=1", { method: "POST" });
+      const j = await res.json();
+      if (res.ok) {
+        alert(`Gmail から ${j.added} 件の新候補 (合計 ${j.total_candidates} / scan: ${j.scanned_emails} 通)`);
+        loadCandidates();
+      } else {
+        alert(`失敗: ${JSON.stringify(j)}`);
+      }
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setCandLoading(false);
+    }
+  };
 
   const save = async (p: Project) => {
     setError(null);
@@ -215,6 +285,15 @@ export default function ProjectsPage() {
             >
               🌱 初期 seed
             </button>
+            <button
+              onClick={scanGmail}
+              disabled={candLoading}
+              className="px-4 py-2 rounded-lg text-sm disabled:opacity-50"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+              title="Gmail 直近30日から GitHub / Vercel / Railway 通知を scan して候補化"
+            >
+              📧 Gmail から発見
+            </button>
           </div>
         </div>
       </div>
@@ -286,6 +365,89 @@ export default function ProjectsPage() {
                 style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
               >
                 {recommendation}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 候補 (discovery) */}
+        {candidates.length > 0 && (
+          <div
+            className="rounded-2xl p-5 mb-6"
+            style={{ background: "var(--color-surface)", border: "1px solid rgba(168, 85, 247, 0.3)" }}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-bold flex items-center gap-2">
+                📥 新しい候補 ({candidates.length})
+                <span className="text-xs font-normal" style={{ color: "var(--color-text-muted)" }}>
+                  — 承認するとプロジェクトに追加、却下で二度と提案されません
+                </span>
+              </h2>
+              <button
+                onClick={() => setShowCandidates(!showCandidates)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: "var(--color-bg)" }}
+              >
+                {showCandidates ? "閉じる" : "開く"}
+              </button>
+            </div>
+            {showCandidates && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {candidates.map((c) => (
+                  <div
+                    key={c.id}
+                    className="p-3 rounded-lg"
+                    style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: "var(--color-surface)", color: "var(--color-text-muted)" }}>
+                        {c.source}
+                      </span>
+                      <span className="font-medium text-sm truncate">{c.name}</span>
+                    </div>
+                    {c.local_path && (
+                      <div className="text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                        📁 {c.local_path}
+                      </div>
+                    )}
+                    {c.github_url && (
+                      <div className="text-xs mb-1 truncate" style={{ color: "var(--color-text-muted)" }}>
+                        🔗 <a href={c.github_url} target="_blank" rel="noopener" className="hover:underline">{c.github_url}</a>
+                      </div>
+                    )}
+                    {c.last_commit_message && (
+                      <div className="text-xs mb-1 truncate" style={{ color: "var(--color-text-muted)" }}>
+                        💬 {c.last_commit_message}
+                      </div>
+                    )}
+                    {c.last_email_subject && (
+                      <div className="text-xs mb-1 truncate" style={{ color: "var(--color-text-muted)" }}>
+                        ✉ {c.last_email_subject}
+                      </div>
+                    )}
+                    {c.stack_hint && c.stack_hint !== "unknown" && (
+                      <div className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>
+                        🧱 {c.stack_hint}
+                      </div>
+                    )}
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => approveCandidate(c)}
+                        className="text-xs px-3 py-1 rounded font-medium"
+                        style={{ background: "var(--color-accent)", color: "white" }}
+                      >
+                        ✓ 承認 → プロジェクト追加
+                      </button>
+                      <button
+                        onClick={() => rejectCandidate(c)}
+                        className="text-xs px-3 py-1 rounded"
+                        style={{ background: "var(--color-surface)", color: "#ef4444" }}
+                      >
+                        却下
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -377,6 +539,25 @@ export default function ProjectsPage() {
                   >
                     <span style={{ color: "var(--color-text-muted)" }}>次: </span>
                     {p.next_action}
+                  </div>
+                )}
+
+                {p.last_commit_message && (
+                  <div
+                    className="text-xs p-2 rounded-lg mb-2 flex items-start gap-2"
+                    style={{ background: "var(--color-bg)" }}
+                  >
+                    <span style={{ color: "var(--color-text-muted)" }}>💬</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate">{p.last_commit_message}</div>
+                      <div className="text-[10px] mt-0.5 flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
+                        {p.last_commit_sha && <span className="font-mono">{p.last_commit_sha.slice(0, 7)}</span>}
+                        {p.last_commit_date && <span>{p.last_commit_date.slice(0, 10)}</span>}
+                        {(p.uncommitted_changes ?? 0) > 0 && (
+                          <span style={{ color: "#f59e0b" }}>● 未コミット {p.uncommitted_changes}</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
 

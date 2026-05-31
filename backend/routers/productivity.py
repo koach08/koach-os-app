@@ -216,6 +216,39 @@ def delete_life_block(block_id: str):
     return {"ok": True}
 
 
+class LifeBlockBulk(BaseModel):
+    """複数曜日にまとめて life-block を登録 (保育園送迎=月-金 等)"""
+    title: str
+    weekdays: list[int]  # [0,1,2,3,4] = 月-金
+    start_hm: str
+    end_hm: str
+    category: Category = "family"
+
+
+@router.post("/productivity/life-blocks/bulk")
+def add_life_blocks_bulk(req: LifeBlockBulk):
+    if not req.weekdays:
+        raise HTTPException(status_code=400, detail="weekdays が空です")
+    items = _load_life_blocks()
+    created = []
+    base_ts = int(datetime.now().timestamp() * 1000)
+    for i, wd in enumerate(req.weekdays):
+        if wd < 0 or wd > 6:
+            continue
+        new = {
+            "id": f"p{base_ts + i}",
+            "title": req.title,
+            "weekday": wd,
+            "start_hm": req.start_hm,
+            "end_hm": req.end_hm,
+            "category": req.category,
+        }
+        items.append(new)
+        created.append(new)
+    _write_json(LIFE_BLOCKS_PATH, items)
+    return {"created": created, "count": len(created)}
+
+
 # ─── Plan generation ────────────────────────────────────────────────────────
 @router.post("/productivity/plan")
 def generate_plan(req: PlanRequest):

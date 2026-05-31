@@ -85,6 +85,7 @@ export default function CoachPage() {
   const [newBlock, setNewBlock] = useState<LifeBlock>({
     id: "", title: "", weekday: 0, start_hm: "17:00", end_hm: "18:30", category: "family",
   });
+  const [selectedWeekdays, setSelectedWeekdays] = useState<Set<number>>(new Set([0, 1, 2, 3, 4]));
   const [showLifeForm, setShowLifeForm] = useState(false);
   const [patternReport, setPatternReport] = useState<PatternReport | null>(null);
   const [patternLoading, setPatternLoading] = useState(false);
@@ -173,14 +174,45 @@ export default function CoachPage() {
 
   const addLifeBlock = async () => {
     if (!newBlock.title.trim()) return;
-    const r = await fetch(`${apiBase}/api/productivity/life-blocks`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newBlock),
+    const weekdays = Array.from(selectedWeekdays).sort((a, b) => a - b);
+    if (weekdays.length === 0) {
+      setError("曜日を1つ以上選択してください");
+      return;
+    }
+    const r = await fetch(`${apiBase}/api/productivity/life-blocks/bulk`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: newBlock.title,
+        weekdays,
+        start_hm: newBlock.start_hm,
+        end_hm: newBlock.end_hm,
+        category: newBlock.category,
+      }),
     });
     if (r.ok) {
-      const created = await r.json();
-      setLifeBlocks((l) => [...l, created]);
+      const { created } = await r.json();
+      setLifeBlocks((l) => [...l, ...created]);
       setNewBlock({ ...newBlock, title: "" });
+      setError(null);
+    } else {
+      setError(await r.text());
     }
+  };
+
+  const toggleWeekday = (wd: number) => {
+    setSelectedWeekdays((prev) => {
+      const next = new Set(prev);
+      if (next.has(wd)) next.delete(wd);
+      else next.add(wd);
+      return next;
+    });
+  };
+
+  const applyPreset = (preset: "weekday" | "everyday" | "weekend" | "clear") => {
+    if (preset === "weekday") setSelectedWeekdays(new Set([0, 1, 2, 3, 4]));
+    else if (preset === "everyday") setSelectedWeekdays(new Set([0, 1, 2, 3, 4, 5, 6]));
+    else if (preset === "weekend") setSelectedWeekdays(new Set([5, 6]));
+    else setSelectedWeekdays(new Set());
   };
 
   const deleteLifeBlock = async (id: string) => {
@@ -505,30 +537,72 @@ export default function CoachPage() {
             )}
 
             {showLifeForm && (
-              <div className="flex gap-2 flex-wrap items-center">
+              <div className="space-y-3">
                 <input type="text" placeholder="例: 保育園お迎え" value={newBlock.title}
                   onChange={(e) => setNewBlock({ ...newBlock, title: e.target.value })}
-                  className="flex-1 px-3 py-2 rounded-lg text-sm min-w-[200px]"
+                  className="w-full px-3 py-2 rounded-lg text-sm"
                   style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
                 />
-                <select value={newBlock.weekday} onChange={(e) => setNewBlock({ ...newBlock, weekday: Number(e.target.value) })}
-                  className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}>
-                  {WEEKDAYS.map((w, i) => <option key={w} value={i}>{w}曜</option>)}
-                </select>
-                <input type="time" value={newBlock.start_hm} onChange={(e) => setNewBlock({ ...newBlock, start_hm: e.target.value })}
-                  className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
-                <span style={{ color: "var(--color-text-muted)" }}>〜</span>
-                <input type="time" value={newBlock.end_hm} onChange={(e) => setNewBlock({ ...newBlock, end_hm: e.target.value })}
-                  className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
-                <select value={newBlock.category} onChange={(e) => setNewBlock({ ...newBlock, category: e.target.value as Category })}
-                  className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}>
-                  {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
-                </select>
-                <button onClick={addLifeBlock} disabled={!newBlock.title.trim()}
-                  className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-                  style={{ background: "var(--color-accent)", color: "white" }}>
-                  追加
-                </button>
+
+                {/* 曜日複数選択 + プリセット */}
+                <div>
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>曜日 (複数可)</span>
+                    <button type="button" onClick={() => applyPreset("weekday")}
+                      className="text-xs px-2 py-0.5 rounded"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                      月-金
+                    </button>
+                    <button type="button" onClick={() => applyPreset("weekend")}
+                      className="text-xs px-2 py-0.5 rounded"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                      土日
+                    </button>
+                    <button type="button" onClick={() => applyPreset("everyday")}
+                      className="text-xs px-2 py-0.5 rounded"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                      毎日
+                    </button>
+                    <button type="button" onClick={() => applyPreset("clear")}
+                      className="text-xs px-2 py-0.5 rounded"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+                      クリア
+                    </button>
+                  </div>
+                  <div className="flex gap-1 flex-wrap">
+                    {WEEKDAYS.map((w, i) => {
+                      const active = selectedWeekdays.has(i);
+                      return (
+                        <button key={w} type="button" onClick={() => toggleWeekday(i)}
+                          className="w-10 h-10 rounded-lg text-sm font-medium transition-colors"
+                          style={{
+                            background: active ? "var(--color-accent)" : "var(--color-background)",
+                            color: active ? "white" : "var(--color-text)",
+                            border: `1px solid ${active ? "var(--color-accent)" : "var(--color-border)"}`,
+                          }}>
+                          {w}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-2 items-center flex-wrap">
+                  <input type="time" value={newBlock.start_hm} onChange={(e) => setNewBlock({ ...newBlock, start_hm: e.target.value })}
+                    className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
+                  <span style={{ color: "var(--color-text-muted)" }}>〜</span>
+                  <input type="time" value={newBlock.end_hm} onChange={(e) => setNewBlock({ ...newBlock, end_hm: e.target.value })}
+                    className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
+                  <select value={newBlock.category} onChange={(e) => setNewBlock({ ...newBlock, category: e.target.value as Category })}
+                    className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}>
+                    {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+                  </select>
+                  <button onClick={addLifeBlock} disabled={!newBlock.title.trim() || selectedWeekdays.size === 0}
+                    className="ml-auto px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                    style={{ background: "var(--color-accent)", color: "white" }}>
+                    {selectedWeekdays.size > 1 ? `${selectedWeekdays.size}日分まとめて追加` : "追加"}
+                  </button>
+                </div>
               </div>
             )}
           </div>

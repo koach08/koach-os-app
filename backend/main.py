@@ -91,6 +91,8 @@ app.include_router(agent.router, prefix="/api")
 from routers import email_watch, scheduling
 app.include_router(email_watch.router, prefix="/api")
 app.include_router(scheduling.router, prefix="/api")
+from routers import projects
+app.include_router(projects.router, prefix="/api")
 
 
 @app.get("/api/health")

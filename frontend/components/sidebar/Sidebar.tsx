@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { href: "/daily", label: "Daily", icon: "🌅" },
   { href: "/evening", label: "Evening", icon: "🌙" },
   { href: "/coach", label: "コーチ", icon: "🧭" },
+  { href: "/projects", label: "プロジェクト", icon: "🗂" },
   { href: "/focus", label: "Focus", icon: "⏱" },
   { href: "/calendar", label: "カレンダー", icon: "🗓" },
   { href: "/tasks", label: "Tasks", icon: "✅" },

@@ -1,10 +1,10 @@
 # CLAUDE.md — Koach OS
 
-> **新セッションの Claude へ**: このファイルの「現状 (2026/05/23)」と「次セッションの始め方」を最初に読んでください。下の "v1 Build Specification" は履歴で、現状の Next.js + FastAPI 構成とは異なります。
+> **新セッションの Claude へ**: このファイルの「現状 (2026/05/31)」と「次セッションの始め方」を最初に読んでください。下の "v1 Build Specification" は履歴で、現状の Next.js + FastAPI 構成とは異なります。
 
 ---
 
-## 現状 (2026/05/23)
+## 現状 (2026/05/31)
 
 **今のアーキテクチャ** (v1 Streamlit から完全移行済み):
 - frontend: **Next.js 15.5 + React 19 + TypeScript + Tailwind v4** → Vercel (https://koach-os.vercel.app)

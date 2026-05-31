@@ -56,6 +56,14 @@ class Project(BaseModel):
     next_action: str = ""
     last_touched: str = ""
     notes: str = ""
+    # Auto-synced from local git (optional)
+    last_commit_sha: str = ""
+    last_commit_message: str = ""
+    last_commit_date: str = ""
+    last_commit_author: str = ""
+    uncommitted_changes: int = 0  # working tree dirty file count
+    sync_source: str = ""  # "git" | "claude-code-hook" | "manual"
+    sync_at: str = ""
 
 
 def _read() -> dict:
@@ -438,6 +446,67 @@ def mark_touched(project_id: str):
             _write(data)
             return p
     raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+
+
+class SyncItem(BaseModel):
+    """ローカル / Claude Code から送る git ベースの最新情報"""
+    id: str
+    last_commit_sha: str = ""
+    last_commit_message: str = ""
+    last_commit_date: str = ""  # ISO 8601
+    last_commit_author: str = ""
+    uncommitted_changes: int = 0
+    source: str = "git"  # "git" | "claude-code-hook" | "manual"
+
+
+class SyncBatch(BaseModel):
+    items: list[SyncItem]
+
+
+@router.post("/projects/sync")
+def sync_projects(batch: SyncBatch):
+    """ローカル git の最新コミット情報を一括反映。
+    last_touched は last_commit_date の日付部分で上書き (より直近の場合のみ)。
+    project が存在しない id は無視。
+    """
+    data = _read()
+    projects = data.get("projects", [])
+    by_id = {p.get("id"): p for p in projects}
+    updated = []
+    skipped = []
+    now_iso = now_jst().isoformat()
+
+    for item in batch.items:
+        p = by_id.get(item.id)
+        if not p:
+            skipped.append(item.id)
+            continue
+
+        if item.last_commit_sha:
+            p["last_commit_sha"] = item.last_commit_sha
+        if item.last_commit_message:
+            p["last_commit_message"] = item.last_commit_message
+        if item.last_commit_date:
+            p["last_commit_date"] = item.last_commit_date
+            # last_touched は新しい commit_date の方が大きい時のみ更新
+            commit_day = item.last_commit_date[:10]
+            if commit_day and commit_day > (p.get("last_touched") or ""):
+                p["last_touched"] = commit_day
+        if item.last_commit_author:
+            p["last_commit_author"] = item.last_commit_author
+        p["uncommitted_changes"] = item.uncommitted_changes
+        p["sync_source"] = item.source
+        p["sync_at"] = now_iso
+        updated.append(item.id)
+
+    data["projects"] = projects
+    _write(data)
+    return {
+        "ok": True,
+        "updated": updated,
+        "skipped_unknown": skipped,
+        "count": len(updated),
+    }
 
 
 @router.post("/projects/seed")

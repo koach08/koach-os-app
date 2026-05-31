@@ -6,7 +6,8 @@ GET /api/daily-brief — 朝1画面で生活を回すためのDaily Brief
 - L3 介入：「今日3つに絞って」AI問いかけ
 """
 
-from datetime import timedelta
+import json
+from datetime import timedelta, datetime
 from fastapi import APIRouter, Query
 
 from gcal import is_configured, get_events
@@ -16,6 +17,7 @@ from data_manager import (
     DECISIONS_FILE,
     FAILURES_FILE,
     TASKS_FILE,
+    DATA_DIR,
     now_jst,
 )
 from router import call_ai, DEFAULT_MODELS, AVAILABLE_MODELS
@@ -129,16 +131,49 @@ def _recent_failures(limit: int = 2) -> list[dict]:
     ]
 
 
+DAILY_BRIEF_CACHE = DATA_DIR / "daily_brief_cache.json"
+
+
+def _load_cache() -> dict:
+    if not DAILY_BRIEF_CACHE.exists():
+        return {}
+    try:
+        return json.loads(DAILY_BRIEF_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_cache(cache: dict):
+    try:
+        DAILY_BRIEF_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 @router.get("/daily-brief")
 def daily_brief(
     engine: str = Query("claude", description="claude/gpt/grok/gemini/venice/perplexity/groq"),
     model: str | None = Query(None, description="override model id (optional)"),
+    force: bool = Query(False, description="true ならキャッシュ無視で再生成"),
 ):
     """
     朝1画面で出すDaily Brief。
     schedule + decisions + topics + failures + AI問いかけ を構造化JSONで返す。
+
+    同日中は engine 単位でキャッシュを返す (タブ切替で毎回生成しない)。
+    force=true で再生成。
     """
     now = now_jst()
+    today_key = now.strftime("%Y-%m-%d")
+    cache_key = f"{today_key}::{engine}::{model or 'default'}"
+
+    if not force:
+        cache = _load_cache()
+        cached = cache.get(cache_key)
+        if cached:
+            cached["from_cache"] = True
+            cached["cache_age_sec"] = int((now - datetime.fromisoformat(cached["generated_at"])).total_seconds())
+            return cached
 
     # 1. Gcal 予定（今日 / 明日 / 今週）
     if is_configured():
@@ -298,7 +333,7 @@ def daily_brief(
     except Exception as e:
         ai_brief = f"(AI brief 失敗: {e})"
 
-    return {
+    result = {
         "generated_at": now.isoformat(),
         "schedule": schedule,
         "schedule_tomorrow": schedule_tomorrow,
@@ -313,4 +348,14 @@ def daily_brief(
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,
+        "from_cache": False,
     }
+    # AI brief 失敗時はキャッシュしない (次回再試行のため)
+    if not ai_brief.startswith("(AI brief 失敗"):
+        cache = _load_cache()
+        # 古い日付のエントリを掃除 (今日と昨日だけ残す)
+        cutoff = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        cache = {k: v for k, v in cache.items() if k.split("::")[0] >= cutoff}
+        cache[cache_key] = result
+        _save_cache(cache)
+    return result

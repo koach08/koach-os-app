@@ -54,6 +54,8 @@ type DailyBrief = {
   ai_brief: string;
   engine_used: string;
   model_used: string;
+  from_cache?: boolean;
+  cache_age_sec?: number;
 };
 
 const ENGINES: { value: string; label: string; emoji: string; hint: string }[] = [
@@ -119,11 +121,12 @@ export default function DailyPage() {
     setCompletedKeys(keys);
   };
 
-  const load = (engineOverride?: string) => {
+  const load = (engineOverride?: string, force = false) => {
     const e = engineOverride ?? engine;
     setLoading(true);
     setError(null);
-    fetch(`/api/daily-brief?engine=${encodeURIComponent(e)}`)
+    const url = `/api/daily-brief?engine=${encodeURIComponent(e)}${force ? "&force=true" : ""}`;
+    fetch(url)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<DailyBrief>;
@@ -135,6 +138,8 @@ export default function DailyPage() {
       .catch((er: Error) => setError(er.message))
       .finally(() => setLoading(false));
   };
+
+  const refresh = () => load(engine, true);
 
   useEffect(() => {
     load("claude");
@@ -258,7 +263,7 @@ export default function DailyPage() {
           </h1>
           <div className="mt-6 flex items-center gap-3 flex-wrap">
             <button
-              onClick={() => load()}
+              onClick={refresh}
               disabled={loading}
               className="px-5 py-2.5 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
               style={{
@@ -267,7 +272,7 @@ export default function DailyPage() {
                 boxShadow: "0 4px 14px rgba(59, 130, 246, 0.35)",
               }}
             >
-              {loading ? "生成中..." : "Brief を更新"}
+              {loading ? "生成中..." : "🔄 Brief を再生成"}
             </button>
             {data && (
               <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
@@ -275,6 +280,11 @@ export default function DailyPage() {
                   hour: "2-digit",
                   minute: "2-digit",
                 })} / {data.engine_used}
+                {data.from_cache && (
+                  <span className="ml-2" title="今日のキャッシュから表示中。再生成は左ボタン">
+                    · 💾 キャッシュ
+                  </span>
+                )}
               </span>
             )}
           </div>

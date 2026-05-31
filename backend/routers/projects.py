@@ -66,6 +66,10 @@ class Project(BaseModel):
     uncommitted_changes: int = 0  # working tree dirty file count
     sync_source: str = ""  # "git" | "claude-code-hook" | "manual"
     sync_at: str = ""
+    # Project docs (memory + README + recent commits) — advise 機能の source
+    docs: list[dict] = []  # [{name, content, source}]
+    recent_commits: list[dict] = []  # [{sha, message, date}]
+    docs_synced_at: str = ""
 
 
 def _read() -> dict:
@@ -491,6 +495,18 @@ def mark_touched(project_id: str):
     raise HTTPException(status_code=404, detail=f"project {project_id} not found")
 
 
+class DocItem(BaseModel):
+    name: str  # 表示用 (例: "README.md", "memory: egaku_ai.md")
+    content: str
+    source: str = ""  # "memory" | "readme" | "claude-md" | other
+
+
+class CommitInfo(BaseModel):
+    sha: str = ""
+    message: str = ""
+    date: str = ""
+
+
 class SyncItem(BaseModel):
     """ローカル / Claude Code から送る git ベースの最新情報"""
     id: str
@@ -500,6 +516,9 @@ class SyncItem(BaseModel):
     last_commit_author: str = ""
     uncommitted_changes: int = 0
     source: str = "git"  # "git" | "claude-code-hook" | "manual"
+    # Optional: 資料も同送できる (advise 用)
+    docs: list[DocItem] = []
+    recent_commits: list[CommitInfo] = []
 
 
 class SyncBatch(BaseModel):
@@ -540,6 +559,11 @@ def sync_projects(batch: SyncBatch):
         p["uncommitted_changes"] = item.uncommitted_changes
         p["sync_source"] = item.source
         p["sync_at"] = now_iso
+        if item.docs:
+            p["docs"] = [d.model_dump() for d in item.docs]
+            p["docs_synced_at"] = now_iso
+        if item.recent_commits:
+            p["recent_commits"] = [c.model_dump() for c in item.recent_commits]
         updated.append(item.id)
 
     data["projects"] = projects
@@ -953,3 +977,108 @@ def clear_rejected():
     """却下リストをリセット (もう一度提案させたい時用)"""
     _write_rejected([])
     return {"ok": True}
+
+
+class AdviseReq(BaseModel):
+    focus: str = ""  # 「今日 2 時間ある」「リリース直前」「方向性で迷ってる」等の文脈ヒント
+    engine: str = "claude"
+
+
+def _trim_doc(content: str, max_chars: int = 4000) -> str:
+    """資料を AI に渡す前に頭から max_chars に切る"""
+    if len(content) <= max_chars:
+        return content
+    return content[:max_chars] + "\n\n... (省略: 全 " + str(len(content)) + " 文字)"
+
+
+@router.post("/projects/{project_id}/advise")
+def advise_project(project_id: str, req: AdviseReq):
+    """プロジェクト固有資料 (memory + README + git log) を AI に渡して
+    「今やるべき具体アクション」を返す"""
+    data = _read()
+    p = next((x for x in data.get("projects", []) if x.get("id") == project_id), None)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+
+    docs = p.get("docs") or []
+    recent = p.get("recent_commits") or []
+    docs_block = "\n\n".join(
+        f"### {d.get('name', '?')} (source: {d.get('source','?')})\n{_trim_doc(d.get('content', ''))}"
+        for d in docs
+    ) or "(資料未同期。`python3 ~/.koach-os/scripts/sync_projects.py --with-docs` を叩くと拾われます)"
+
+    commits_block = "\n".join(
+        f"- {c.get('date','?')[:10]} {c.get('sha','')[:7]} {c.get('message','')}"
+        for c in recent[:10]
+    ) or "(コミット履歴未同期)"
+
+    system_prompt = """あなたは志柿のプロジェクト専属アドバイザー (Alfred の AI 補佐)。
+渡された 1 プロジェクトの資料 (memory ファイル / README / CLAUDE.md / 最近のコミット履歴) を読んで、
+「今日やるべき具体的なアクション 3 つ」を返す。
+
+## 出力形式 (Markdown)
+
+### 📊 今の状況サマリ (1-2 文)
+コミット履歴 + 資料から「今このプロジェクトはどこにいるか」を簡潔に。
+
+### 🎯 今やるべき具体アクション (3 つ、優先順位順)
+1. **アクション名** (見積もり時間)
+   - なぜ今これか (1 文)
+   - 着手の最初の一歩 (具体的に、コマンド or ファイル名 or 開く画面)
+2. ...
+3. ...
+
+### ⚠ 詰まってる / 放置されてるもの (もしあれば、1-2 個)
+- 資料から読み取れる「先送り」や「未解決」を指摘
+
+### 💡 中長期で気になる視点 (1 つだけ、深追いしない)
+- 今すぐじゃないけど忘れたら損するやつ
+
+## ルール
+- 一般論禁止。資料に書いてある固有名詞 (機能名 / ファイル名 / 数字) を使う
+- 抽象名詞「〜性」NG、煽らない、励まさない、です/ます
+- 「資料に基づくと」など前置きは省略、結論から
+- アクションは「コーチが提案 → 自分が今からやれる」レベルに具体的に"""
+
+    today = now_jst().strftime("%Y-%m-%d (%A)")
+    user_msg = f"""今: {today}
+プロジェクト: {p.get('name')} ({p.get('id')})
+カテゴリ: {p.get('category')} / ステータス: {p.get('status')} / 優先度: P{p.get('priority',3)}
+現在の next_action: {p.get('next_action') or '(未設定)'}
+最終接触: {p.get('last_touched') or '未記録'} ({p.get('uncommitted_changes', 0)} 件未コミット)
+URL: {p.get('github_url') or '-'} / {p.get('live_url') or '-'}
+
+## ユーザーの今の文脈
+{req.focus or '(指定なし)'}
+
+## 最近のコミット (新しい順)
+{commits_block}
+
+## プロジェクト資料
+{docs_block}
+
+上記資料を踏まえ、このプロジェクトに対する「今日やるべき具体アクション 3 つ」を出してください。"""
+
+    engine = req.engine if req.engine in DEFAULT_MODELS else "claude"
+    model = DEFAULT_MODELS[engine]
+
+    try:
+        out = call_ai(
+            messages=[{"role": "user", "content": user_msg}],
+            system=system_prompt,
+            engine=engine,
+            model=model,
+            max_tokens=2000,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"advise failed: {e}")
+
+    return {
+        "generated_at": now_jst().isoformat(),
+        "project_id": project_id,
+        "engine_used": engine,
+        "model_used": model,
+        "advice": out,
+        "docs_count": len(docs),
+        "commits_used": len(recent[:10]),
+    }

@@ -23,10 +23,57 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_API = "https://backend-production-0987.up.railway.app"
+DEFAULT_MEMORY_DIR = "~/.claude/projects/-Users-koachmedia/memory"
+DOC_MAX_CHARS = 8000  # 1 ファイル上限 (backend 側でさらに切る)
 
 
 def expand(path: str) -> Path:
     return Path(os.path.expanduser(path)).resolve()
+
+
+def collect_docs(local_path: Path, memory_ref: str, memory_dir: Path) -> list[dict]:
+    """memory ファイル + ローカル CLAUDE.md / README.md を集める"""
+    docs: list[dict] = []
+    # memory
+    if memory_ref:
+        mp = memory_dir / memory_ref
+        if mp.exists():
+            try:
+                content = mp.read_text(encoding="utf-8")[:DOC_MAX_CHARS]
+                docs.append({"name": f"memory: {memory_ref}", "content": content, "source": "memory"})
+            except Exception:
+                pass
+    # ローカル CLAUDE.md / README.md (.git があるリポジトリのみ)
+    if local_path.exists() and (local_path / ".git").exists():
+        for fname, src in [("CLAUDE.md", "claude-md"), ("README.md", "readme")]:
+            fp = local_path / fname
+            if fp.exists():
+                try:
+                    content = fp.read_text(encoding="utf-8")[:DOC_MAX_CHARS]
+                    docs.append({"name": fname, "content": content, "source": src})
+                except Exception:
+                    pass
+    return docs
+
+
+def recent_commits(local_path: Path, n: int = 10) -> list[dict]:
+    if not local_path.exists() or not (local_path / ".git").exists():
+        return []
+    try:
+        out = subprocess.check_output(
+            ["git", "log", f"-{n}", "--format=%H%x09%cI%x09%s"],
+            cwd=str(local_path),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        result = []
+        for line in out.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                result.append({"sha": parts[0][:12], "date": parts[1], "message": parts[2][:200]})
+        return result
+    except Exception:
+        return []
 
 
 def git_info(local_path: Path) -> dict | None:
@@ -110,7 +157,10 @@ def main():
     parser.add_argument("--api", default=DEFAULT_API, help="backend base URL")
     parser.add_argument("--dry-run", action="store_true", help="送信せず表示のみ")
     parser.add_argument("--only", help="特定 project id だけ (カンマ区切り可)")
+    parser.add_argument("--with-docs", action="store_true", help="memory + README + git log 10件も同送 (advise 用)")
+    parser.add_argument("--memory-dir", default=DEFAULT_MEMORY_DIR)
     args = parser.parse_args()
+    memory_dir = expand(args.memory_dir)
 
     print(f"→ fetching project list from {args.api}")
     try:
@@ -138,6 +188,14 @@ def main():
         item = {"id": pid, **info}
         print(f"    sha={info['last_commit_sha']} | {info['last_commit_message']}")
         print(f"    date={info['last_commit_date']} dirty={info['uncommitted_changes']}")
+
+        if args.with_docs:
+            docs = collect_docs(path, p.get("memory_ref", ""), memory_dir)
+            commits = recent_commits(path, 10)
+            item["docs"] = docs
+            item["recent_commits"] = commits
+            print(f"    docs={[d['name'] for d in docs]} commits={len(commits)}")
+
         items.append(item)
 
     if not items:

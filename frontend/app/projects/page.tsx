@@ -106,6 +106,11 @@ export default function ProjectsPage() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [showCandidates, setShowCandidates] = useState(true);
   const [candLoading, setCandLoading] = useState(false);
+  const [adviseFor, setAdviseFor] = useState<Project | null>(null);
+  const [adviseFocus, setAdviseFocus] = useState("");
+  const [adviseLoading, setAdviseLoading] = useState(false);
+  const [adviseText, setAdviseText] = useState<string | null>(null);
+  const [adviseMeta, setAdviseMeta] = useState<{ docs_count: number; commits_used: number } | null>(null);
 
   const load = () => {
     fetch("/api/projects")
@@ -144,6 +149,27 @@ export default function ProjectsPage() {
     if (!confirm(`「${cand.name}」を却下しますか? (二度と提案されません)`)) return;
     await fetch(`/api/projects/candidates/${encodeURIComponent(cand.id)}/reject`, { method: "POST" });
     loadCandidates();
+  };
+
+  const requestAdvice = async (project: Project, focus: string) => {
+    setAdviseLoading(true);
+    setAdviseText(null);
+    setAdviseMeta(null);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(project.id)}/advise`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ focus, engine: "claude" }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || res.statusText);
+      setAdviseText(j.advice);
+      setAdviseMeta({ docs_count: j.docs_count, commits_used: j.commits_used });
+    } catch (e) {
+      setAdviseText(`エラー: ${(e as Error).message}`);
+    } finally {
+      setAdviseLoading(false);
+    }
   };
 
   const scanGmail = async () => {
@@ -604,6 +630,19 @@ export default function ProjectsPage() {
                   </button>
                   <button
                     onClick={() => {
+                      setAdviseFor(p);
+                      setAdviseFocus("");
+                      setAdviseText(null);
+                      setAdviseMeta(null);
+                    }}
+                    className="px-2 py-1 rounded hover:opacity-80"
+                    style={{ background: "var(--color-bg)" }}
+                    title="資料 (memory + README + git log) を AI に読ませて具体アクションを提案"
+                  >
+                    💡 アドバイス
+                  </button>
+                  <button
+                    onClick={() => {
                       setEditing(p);
                       setAdding(false);
                     }}
@@ -806,6 +845,80 @@ export default function ProjectsPage() {
                 保存
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* アドバイス モーダル */}
+      {adviseFor && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4 z-50"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setAdviseFor(null)}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">💡 {adviseFor.name} へのアドバイス</h2>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                  memory + README + 直近コミット 10 件を Claude Opus 4.8 に読ませて具体アクション 3 つ
+                </p>
+              </div>
+              <button
+                onClick={() => setAdviseFor(null)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: "var(--color-bg)" }}
+              >
+                閉じる
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                今の文脈 (任意 — 例: 「今日 2 時間しかない」「リリース前」「方向に迷ってる」)
+              </label>
+              <textarea
+                value={adviseFocus}
+                onChange={(e) => setAdviseFocus(e.target.value)}
+                rows={2}
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                placeholder="(なくても OK)"
+              />
+              <button
+                onClick={() => requestAdvice(adviseFor, adviseFocus)}
+                disabled={adviseLoading}
+                className="mt-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                {adviseLoading ? "Claude 考え中..." : "アドバイスを取得"}
+              </button>
+            </div>
+
+            {adviseMeta && (
+              <div className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>
+                資料 {adviseMeta.docs_count} 件 / 直近コミット {adviseMeta.commits_used} 件 を参照
+              </div>
+            )}
+
+            {adviseText && (
+              <div
+                className="p-4 rounded-lg text-sm whitespace-pre-wrap"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", lineHeight: 1.7 }}
+              >
+                {adviseText}
+              </div>
+            )}
+
+            {!adviseText && !adviseLoading && (
+              <div className="text-xs mt-4 p-3 rounded-lg" style={{ background: "var(--color-bg)", color: "var(--color-text-muted)" }}>
+                ヒント: 資料が空の場合は、ローカルで <code>python3 ~/.koach-os/scripts/sync_projects.py --with-docs</code> を 1 回叩くと、memory ファイル + README + 直近 10 コミットが backend に同期されます。
+              </div>
+            )}
           </div>
         </div>
       )}

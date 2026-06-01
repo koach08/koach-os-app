@@ -166,14 +166,8 @@ def daily_brief(
     now = now_jst()
     today_key = now.strftime("%Y-%m-%d")
     cache_key = f"{today_key}::{engine}::{model or 'default'}"
-
-    if not force:
-        cache = _load_cache()
-        cached = cache.get(cache_key)
-        if cached:
-            cached["from_cache"] = True
-            cached["cache_age_sec"] = int((now - datetime.fromisoformat(cached["generated_at"])).total_seconds())
-            return cached
+    # NOTE: schedule / completions / backlog などは毎回 fresh で取る (Calendar 削除や完了チェックが即反映されるため)
+    # キャッシュするのは ai_brief だけ。下で生成パートで再利用する
 
     # 1. Gcal 予定（今日 / 明日 / 今週）
     if is_configured():
@@ -322,16 +316,32 @@ def daily_brief(
         engine = "claude"
     resolved_model = model or DEFAULT_MODELS.get(engine, DEFAULT_MODELS["claude"])
 
-    try:
-        ai_brief = call_ai(
-            messages=[{"role": "user", "content": "今日のbriefingをお願いします。"}],
-            system=prompt,
-            engine=engine,
-            model=resolved_model,
-            max_tokens=600,
-        )
-    except Exception as e:
-        ai_brief = f"(AI brief 失敗: {e})"
+    # AI brief は同日中キャッシュ (タブ切替で再生成しない)
+    # ※キャッシュ判定の prompt_hash: schedule / backlog の中身が大きく変わったらキャッシュ無効
+    import hashlib as _hl
+    prompt_hash = _hl.md5(prompt.encode("utf-8")).hexdigest()[:8]
+    cache_key_full = f"{cache_key}::{prompt_hash}"
+
+    ai_brief = ""
+    brief_from_cache = False
+    if not force:
+        cache = _load_cache()
+        cached = cache.get(cache_key_full)
+        if cached and cached.get("ai_brief"):
+            ai_brief = cached["ai_brief"]
+            brief_from_cache = True
+
+    if not ai_brief:
+        try:
+            ai_brief = call_ai(
+                messages=[{"role": "user", "content": "今日のbriefingをお願いします。"}],
+                system=prompt,
+                engine=engine,
+                model=resolved_model,
+                max_tokens=600,
+            )
+        except Exception as e:
+            ai_brief = f"(AI brief 失敗: {e})"
 
     result = {
         "generated_at": now.isoformat(),
@@ -348,14 +358,13 @@ def daily_brief(
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,
-        "from_cache": False,
+        "from_cache": brief_from_cache,
     }
-    # AI brief 失敗時はキャッシュしない (次回再試行のため)
-    if not ai_brief.startswith("(AI brief 失敗"):
+    # AI brief だけキャッシュ (失敗時 / 既にキャッシュから返した時は書かない)
+    if not brief_from_cache and not ai_brief.startswith("(AI brief 失敗"):
         cache = _load_cache()
-        # 古い日付のエントリを掃除 (今日と昨日だけ残す)
         cutoff = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         cache = {k: v for k, v in cache.items() if k.split("::")[0] >= cutoff}
-        cache[cache_key] = result
+        cache[cache_key_full] = {"ai_brief": ai_brief, "generated_at": now.isoformat()}
         _save_cache(cache)
     return result

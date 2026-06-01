@@ -11,7 +11,7 @@ Setup:
 
 import json
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
 from data_manager import BASE_DIR, now_jst, JST, get_secret
 
 CREDENTIALS_FILE = BASE_DIR / "credentials.json"
@@ -253,11 +253,37 @@ def create_event(
     resolved_type = event_type or detect_event_type(title, description)
     reminders = REMINDER_PRESETS.get(resolved_type, REMINDER_PRESETS["default"])
 
-    if len(start_iso) <= 10:  # YYYY-MM-DD all-day
+    # end <= start を自動補正 (Google は timeRangeEmpty で弾くため)
+    # all-day: end は exclusive なので start と同じだと「0 日間」になる → +1 日
+    # 時刻あり: end == start や end < start → +1 時間
+    start_is_all_day = len(start_iso) <= 10
+    if not end_iso:
+        # 終了未指定 → start から デフォルト幅 (all-day=+1日 / 時刻=+1時間)
+        end_iso = start_iso
+    if start_is_all_day:
+        try:
+            sd = datetime.fromisoformat(start_iso).date()
+            ed = datetime.fromisoformat(end_iso[:10]).date() if end_iso else sd
+            if ed <= sd:
+                ed = sd + timedelta(days=1)
+                end_iso = ed.isoformat()
+        except Exception:
+            pass
+    else:
+        try:
+            sdt = datetime.fromisoformat(start_iso)
+            edt = datetime.fromisoformat(end_iso) if end_iso else sdt
+            if edt <= sdt:
+                edt = sdt + timedelta(hours=1)
+                end_iso = edt.isoformat()
+        except Exception:
+            pass
+
+    if start_is_all_day:  # YYYY-MM-DD all-day
         body = {
             "summary": title,
             "start": {"date": start_iso},
-            "end": {"date": end_iso},
+            "end": {"date": end_iso[:10]},
             "description": description,
             "location": location,
             "reminders": {"useDefault": False, "overrides": reminders},

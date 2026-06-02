@@ -67,7 +67,8 @@ async def chat(req: ChatRequest):
     # 6. Call AI
     ai_response = call_ai(messages, system_prompt, routing["engine"], routing["model"])
 
-    # 7. Log interaction
+    # 7. Log interaction (FULL content, not just preview — 2026-06-02 fix:
+    # user 入力をメモのつもりで打ったのに 100 文字 truncate で失われていた事故への対応)
     log_entry = {
         "id": generate_id("log"),
         "timestamp": timestamp_jst(),
@@ -80,11 +81,33 @@ async def chat(req: ChatRequest):
         },
         "axes_triggered": axes,
         "acceptance_gradient": gradient,
-        "user_input_preview": user_input[:100],
+        "user_input_preview": user_input[:100],   # 後方互換 (UI が preview を読んでる場合用)
         "ai_response_preview": ai_response[:100] if isinstance(ai_response, str) else "",
+        "user_input": user_input,                 # 完全版を保存
+        "ai_response": ai_response if isinstance(ai_response, str) else "",
         "task_type": task_type,
     }
     append_jsonl(LOGS_FILE, log_entry)
+
+    # 長文入力 (300 文字超かつ "?" で始まらない、= 質問ではなく独白/メモ的) は memos にも自動保存
+    # → user は chat に書いたのに memos に残らないという事故を二度と起こさない
+    if len(user_input.strip()) >= 300 and not user_input.strip().startswith(("?", "？")):
+        try:
+            from data_manager import MEMOS_FILE, now_jst
+            ts = timestamp_jst()
+            memo_entry = {
+                "id": f"memo_chat_{int(now_jst().timestamp() * 1000)}",
+                "content": user_input,
+                "color": "blue",
+                "pinned": False,
+                "created_at": ts,
+                "created_at_ts": int(now_jst().timestamp() * 1000),
+                "updated_at": ts,
+                "source": "chat_long_input",
+            }
+            append_jsonl(MEMOS_FILE, memo_entry)
+        except Exception:
+            pass  # memo 保存失敗しても chat レスポンスは出す
 
     # 8. SSE streaming response
     metadata = {

@@ -111,6 +111,12 @@ export default function ProjectsPage() {
   const [adviseLoading, setAdviseLoading] = useState(false);
   const [adviseText, setAdviseText] = useState<string | null>(null);
   const [adviseMeta, setAdviseMeta] = useState<{ docs_count: number; commits_used: number } | null>(null);
+  const [hermesFor, setHermesFor] = useState<Project | null>(null);
+  const [hermesTask, setHermesTask] = useState("");
+  const [hermesPrompt, setHermesPrompt] = useState<string | null>(null);
+  const [hermesLoading, setHermesLoading] = useState(false);
+  const [hermesCopied, setHermesCopied] = useState(false);
+  const [hermesChars, setHermesChars] = useState(0);
 
   const load = () => {
     fetch("/api/projects")
@@ -169,6 +175,45 @@ export default function ProjectsPage() {
       setAdviseText(`エラー: ${(e as Error).message}`);
     } finally {
       setAdviseLoading(false);
+    }
+  };
+
+  const generateHermesPrompt = async (project: Project, task: string) => {
+    setHermesLoading(true);
+    setHermesPrompt(null);
+    setHermesCopied(false);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(project.id)}/hermes-handoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task, include_docs: true, include_commits: true }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || res.statusText);
+      setHermesPrompt(j.prompt);
+      setHermesChars(j.char_count);
+    } catch (e) {
+      setHermesPrompt(`エラー: ${(e as Error).message}`);
+    } finally {
+      setHermesLoading(false);
+    }
+  };
+
+  const copyHermesPrompt = async () => {
+    if (!hermesPrompt) return;
+    try {
+      await navigator.clipboard.writeText(hermesPrompt);
+      setHermesCopied(true);
+      setTimeout(() => setHermesCopied(false), 2000);
+    } catch {
+      // fallback: select textarea
+      const el = document.getElementById("hermes-prompt-textarea") as HTMLTextAreaElement | null;
+      if (el) {
+        el.select();
+        document.execCommand("copy");
+        setHermesCopied(true);
+        setTimeout(() => setHermesCopied(false), 2000);
+      }
     }
   };
 
@@ -643,6 +688,19 @@ export default function ProjectsPage() {
                   </button>
                   <button
                     onClick={() => {
+                      setHermesFor(p);
+                      setHermesTask("");
+                      setHermesPrompt(null);
+                      setHermesCopied(false);
+                    }}
+                    className="px-2 py-1 rounded hover:opacity-80"
+                    style={{ background: "var(--color-bg)" }}
+                    title="このプロジェクトのコンテキストを Hermes Desktop 用プロンプトに整形 → コピー"
+                  >
+                    📨 Hermes
+                  </button>
+                  <button
+                    onClick={() => {
                       setEditing(p);
                       setAdding(false);
                     }}
@@ -917,6 +975,101 @@ export default function ProjectsPage() {
             {!adviseText && !adviseLoading && (
               <div className="text-xs mt-4 p-3 rounded-lg" style={{ background: "var(--color-bg)", color: "var(--color-text-muted)" }}>
                 ヒント: 資料が空の場合は、ローカルで <code>python3 ~/.koach-os/scripts/sync_projects.py --with-docs</code> を 1 回叩くと、memory ファイル + README + 直近 10 コミットが backend に同期されます。
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Hermes ハンドオフ モーダル */}
+      {hermesFor && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4 z-50"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setHermesFor(null)}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">📨 {hermesFor.name} → Hermes Desktop</h2>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                  プロジェクトのコンテキスト (memory + README + 最近のコミット) + あなたの依頼を Hermes に貼り付け用の Markdown に整形
+                </p>
+              </div>
+              <button
+                onClick={() => setHermesFor(null)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: "var(--color-bg)" }}
+              >
+                閉じる
+              </button>
+            </div>
+
+            <div className="mb-3">
+              <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                Hermes にやってほしいこと
+              </label>
+              <textarea
+                value={hermesTask}
+                onChange={(e) => setHermesTask(e.target.value)}
+                rows={3}
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                placeholder="例: 未コミット 19 件を整理して git push、Stripe webhook の 401 を直す、influencer-studio を本番デプロイして 1 本通す..."
+              />
+              <button
+                onClick={() => hermesFor && generateHermesPrompt(hermesFor, hermesTask)}
+                disabled={hermesLoading || !hermesTask.trim()}
+                className="mt-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                {hermesLoading ? "整形中..." : "プロンプトを生成"}
+              </button>
+            </div>
+
+            {hermesPrompt && (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    {hermesChars.toLocaleString()} 文字 (推定 {Math.ceil(hermesChars / 4).toLocaleString()} tokens)
+                  </span>
+                  <button
+                    onClick={copyHermesPrompt}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                    style={{
+                      background: hermesCopied ? "#10b981" : "var(--color-accent)",
+                      color: "white",
+                    }}
+                  >
+                    {hermesCopied ? "✓ コピー完了" : "📋 クリップボードにコピー"}
+                  </button>
+                </div>
+                <textarea
+                  id="hermes-prompt-textarea"
+                  readOnly
+                  value={hermesPrompt}
+                  rows={18}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-mono"
+                  style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                />
+                <div className="text-xs mt-3 p-3 rounded-lg" style={{ background: "var(--color-bg)", color: "var(--color-text-muted)" }}>
+                  次にやること:
+                  <ol className="mt-1 list-decimal ml-5 space-y-0.5">
+                    <li>Hermes Desktop を開く</li>
+                    <li>新しいチャットで貼り付け (⌘V)</li>
+                    <li>送信 — Hermes が memory に取り込んで実行</li>
+                  </ol>
+                </div>
+              </>
+            )}
+
+            {!hermesPrompt && !hermesLoading && (
+              <div className="text-xs mt-2 p-3 rounded-lg" style={{ background: "var(--color-bg)", color: "var(--color-text-muted)" }}>
+                資料が空の場合は <code>python3 ~/.koach-os/scripts/sync_projects.py --with-docs</code> でローカルから memory + README + 直近 10 コミットを同期できます。
               </div>
             )}
           </div>

@@ -1,5 +1,31 @@
 # CLAUDE.md — Koach OS
 
+> ## 🚨 DEPLOY 絶対ルール (最重要、先に読め)
+>
+> **`vercel --prod` を裸で叩くな**。必ず:
+> ```bash
+> cd frontend
+> bash ../scripts/safe_deploy.sh koach-os
+> ```
+> 経由で deploy する。`safe_deploy.sh` は `.vercel/project.json` の `projectName` が `koach-os` であることを確認してから実行する。一致しなければ即 abort。
+>
+> ### 過去の事故 (2026-06-03)
+> Claude が `cd frontend && vercel --prod --yes` を `.vercel` link なし状態で実行 → Vercel CLI が cwd フォルダ名「frontend」から推測 → 同名の EGAKU AI の Vercel project (実は `frontend` という名前だった) に Koach OS が**本番上書き** deploy される事故。
+> - 44 分間 egaku-ai.com に Koach OS が表示された
+> - EGAKU の認証 / rate-limit を上書きで無効化したことで fal.ai 課金 **802 ドル**の二次被害
+>
+> ### 教訓 (memory にもある)
+> - `feedback_no_cross_project_deploy.md` — 同じ事故が過去にもあったのに無視された
+> - **Vercel CLI は link が外れた状態では cwd フォルダ名を project 名と推測する**。これは危険挙動
+> - 防御は「事前確認の文化」ではなく「物理層 (wrapper script)」で固める
+>
+> ### Bash で vercel コマンドを叩く前に必ず:
+> 1. `cat .vercel/project.json` で projectName を目視確認
+> 2. 期待と違う / ファイルがない → 絶対に `vercel --prod` を叩かず、`vercel link --project koach-os --yes` を先に
+> 3. `safe_deploy.sh` 経由 (上のコマンド) なら 1-2 は自動チェックされる
+>
+> ---
+
 > **新セッションの Claude へ**: このファイルの「現状 (2026/05/31)」と「次セッションの始め方」を最初に読んでください。下の "v1 Build Specification" は履歴で、現状の Next.js + FastAPI 構成とは異なります。
 
 ---

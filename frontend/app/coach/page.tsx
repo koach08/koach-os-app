@@ -78,6 +78,14 @@ export default function CoachPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Backlog form
+  const [hermesFor, setHermesFor] = useState<BacklogItem | null>(null);
+  const [hermesProjectId, setHermesProjectId] = useState("");
+  const [hermesExtra, setHermesExtra] = useState("");
+  const [hermesPrompt, setHermesPrompt] = useState<string | null>(null);
+  const [hermesLoading, setHermesLoading] = useState(false);
+  const [hermesCopied, setHermesCopied] = useState(false);
+  const [hermesChars, setHermesChars] = useState(0);
+  const [projectIdList, setProjectIdList] = useState<{ id: string; name: string }[]>([]);
   const [newItem, setNewItem] = useState<BacklogItem>({
     id: "", title: "", category: "career", estimated_minutes: 60, urgency: "medium", notes: "", needs_ai: false, done: false,
   });
@@ -144,6 +152,63 @@ export default function CoachPage() {
     });
     if (r.ok) {
       setBacklog((b) => b.map((x) => (x.id === item.id ? updated : x)));
+    }
+  };
+
+  const openHermes = async (item: BacklogItem) => {
+    setHermesFor(item);
+    setHermesExtra("");
+    setHermesProjectId("");
+    setHermesPrompt(null);
+    setHermesCopied(false);
+    // Project リストを取得 (初回のみ)
+    if (projectIdList.length === 0) {
+      try {
+        const r = await fetch(`${apiBase}/api/projects`);
+        const j = await r.json();
+        setProjectIdList((j.projects ?? []).map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
+      } catch {
+        // 取れなくても続行
+      }
+    }
+  };
+
+  const generateHermesPrompt = async () => {
+    if (!hermesFor) return;
+    setHermesLoading(true);
+    setHermesPrompt(null);
+    setHermesCopied(false);
+    try {
+      const res = await fetch(`${apiBase}/api/productivity/backlog/${encodeURIComponent(hermesFor.id)}/hermes-handoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: hermesProjectId, extra_task: hermesExtra }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || res.statusText);
+      setHermesPrompt(j.prompt);
+      setHermesChars(j.char_count);
+    } catch (e) {
+      setHermesPrompt(`エラー: ${(e as Error).message}`);
+    } finally {
+      setHermesLoading(false);
+    }
+  };
+
+  const copyHermesPrompt = async () => {
+    if (!hermesPrompt) return;
+    try {
+      await navigator.clipboard.writeText(hermesPrompt);
+      setHermesCopied(true);
+      setTimeout(() => setHermesCopied(false), 2000);
+    } catch {
+      const el = document.getElementById("coach-hermes-textarea") as HTMLTextAreaElement | null;
+      if (el) {
+        el.select();
+        document.execCommand("copy");
+        setHermesCopied(true);
+        setTimeout(() => setHermesCopied(false), 2000);
+      }
     }
   };
 
@@ -463,6 +528,16 @@ export default function CoachPage() {
                         )}
                       </span>
                     )}
+                    {!b.done && (
+                      <button
+                        onClick={() => openHermes(b)}
+                        title="この項目を Hermes Desktop に投げる用のプロンプトを生成"
+                        className="text-xs"
+                        style={{ color: "var(--color-text-muted)" }}
+                      >
+                        📨
+                      </button>
+                    )}
                     <button onClick={() => deleteBacklog(b.id)} className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                       🗑
                     </button>
@@ -717,6 +792,104 @@ export default function CoachPage() {
           </div>
         </div>
       </div>
+
+      {/* Hermes ハンドオフ モーダル */}
+      {hermesFor && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4 z-50"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setHermesFor(null)}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">📨 バックログを Hermes に投げる</h2>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                  「{hermesFor.title}」 をベースに Hermes Desktop 用 markdown を整形
+                </p>
+              </div>
+              <button
+                onClick={() => setHermesFor(null)}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: "var(--color-background)" }}
+              >
+                閉じる
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                  関連プロジェクト (任意 — 選ぶと memory + 最近のコミットが添付されます)
+                </label>
+                <select
+                  value={hermesProjectId}
+                  onChange={(e) => setHermesProjectId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg text-sm"
+                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}
+                >
+                  <option value="">(プロジェクト紐付けなし)</option>
+                  {projectIdList.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                  追加で書きたいこと (任意 — 元のタイトル/notes に上書き)
+                </label>
+                <textarea
+                  value={hermesExtra}
+                  onChange={(e) => setHermesExtra(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 rounded-lg text-sm"
+                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}
+                  placeholder="(なくても OK。元の項目だけで生成)"
+                />
+              </div>
+
+              <button
+                onClick={generateHermesPrompt}
+                disabled={hermesLoading}
+                className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                style={{ background: "var(--color-accent)", color: "white" }}
+              >
+                {hermesLoading ? "整形中..." : "プロンプトを生成"}
+              </button>
+            </div>
+
+            {hermesPrompt && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    {hermesChars.toLocaleString()} 文字 (推定 {Math.ceil(hermesChars / 4).toLocaleString()} tokens)
+                  </span>
+                  <button
+                    onClick={copyHermesPrompt}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                    style={{ background: hermesCopied ? "#10b981" : "var(--color-accent)", color: "white" }}
+                  >
+                    {hermesCopied ? "✓ コピー完了" : "📋 クリップボードにコピー"}
+                  </button>
+                </div>
+                <textarea
+                  id="coach-hermes-textarea"
+                  readOnly
+                  value={hermesPrompt}
+                  rows={16}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-mono"
+                  style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

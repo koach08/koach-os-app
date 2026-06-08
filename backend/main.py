@@ -93,6 +93,8 @@ app.include_router(email_watch.router, prefix="/api")
 app.include_router(scheduling.router, prefix="/api")
 from routers import projects
 app.include_router(projects.router, prefix="/api")
+from routers import secretary
+app.include_router(secretary.router, prefix="/api")
 
 
 @app.get("/api/health")

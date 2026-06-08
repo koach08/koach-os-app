@@ -35,6 +35,61 @@ type StatusResponse = {
   configured: boolean;
 };
 
+type SecNewItem = {
+  kind: string;
+  title: string;
+  start_iso: string;
+  end_iso: string;
+  all_day: boolean;
+  category: string;
+  event_type: string;
+  location: string;
+  interpretation?: string;
+  estimated_minutes?: number;
+  deadline_date?: string | null;
+};
+
+type SecMove = {
+  ref_kind: "event" | "task";
+  ref_id: string;
+  title: string;
+  new_start_iso: string;
+  new_end_iso: string;
+  reason?: string;
+  protected_move?: boolean;
+  protected?: boolean;
+  cur_start?: string;
+  cur_end?: string;
+  calendar_id?: string;
+  slot?: number;
+  gcal_event_id?: string | null;
+};
+
+type IntakeResult = {
+  new_item: SecNewItem;
+  conflicts_found: number;
+  has_protected_move: boolean;
+  plan: {
+    moves: SecMove[];
+    place_new: { start_iso: string; end_iso: string } | null;
+    unplaceable: { title: string; why: string }[];
+    balance_note: string;
+    summary: string;
+  };
+};
+
+type EmailItem = {
+  kind: string;
+  title: string;
+  category: string;
+  estimated_minutes: number;
+  deadline_date: string | null;
+  source_subject: string;
+  reason: string;
+  suggested_start_iso: string | null;
+  suggested_end_iso: string | null;
+};
+
 const CONFIDENCE_COLORS: Record<string, { bg: string; text: string }> = {
   high: { bg: "rgba(34, 197, 94, 0.12)", text: "#22c55e" },
   medium: { bg: "rgba(234, 179, 8, 0.12)", text: "#eab308" },
@@ -68,7 +123,7 @@ export default function GmailSyncPage() {
   const [created, setCreated] = useState<Record<number, { ok: boolean; link?: string; err?: string }>>({});
   const [days, setDays] = useState(3);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [mode, setMode] = useState<"gmail" | "pdf" | "excel" | "manual">("gmail");
+  const [mode, setMode] = useState<"gmail" | "pdf" | "excel" | "manual" | "secretary">("gmail");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfMeta, setPdfMeta] = useState<{ filename: string; pageCount: number } | null>(null);
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
@@ -89,6 +144,16 @@ export default function GmailSyncPage() {
   });
   const [manualStatus, setManualStatus] = useState<null | { ok: boolean; msg: string; link?: string }>(null);
 
+  // ─── 秘書 (auto-reschedule) state ───
+  const [secText, setSecText] = useState("");
+  const [secLoading, setSecLoading] = useState(false);
+  const [secError, setSecError] = useState<string | null>(null);
+  const [secResult, setSecResult] = useState<IntakeResult | null>(null);
+  const [secApplying, setSecApplying] = useState(false);
+  const [secApplied, setSecApplied] = useState<null | { ok: boolean; msg: string }>(null);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailItems, setEmailItems] = useState<EmailItem[] | null>(null);
+
   // Direct Railway URL (env-driven). Avoids Vercel proxy 30s timeout.
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -98,6 +163,101 @@ export default function GmailSyncPage() {
       .then((d) => setConfigured(d.configured))
       .catch(() => setConfigured(false));
   }, [apiBase]);
+
+  // ─── 秘書: 突発予定/仕事を解析して組み直し案を取得 ───
+  const runIntake = async () => {
+    if (!secText.trim()) return;
+    setSecLoading(true);
+    setSecError(null);
+    setSecResult(null);
+    setSecApplied(null);
+    try {
+      const res = await fetch(`${apiBase}/api/secretary/intake`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: secText, days_ahead: 5, engine: "gpt" }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      setSecResult((await res.json()) as IntakeResult);
+    } catch (e) {
+      setSecError(e instanceof Error ? e.message : "解析に失敗しました");
+    } finally {
+      setSecLoading(false);
+    }
+  };
+
+  // ─── 秘書: 案を適用 (新予定作成 + 既存予定/タスク移動) ───
+  const applyPlan = async () => {
+    if (!secResult) return;
+    setSecApplying(true);
+    setSecApplied(null);
+    try {
+      const ni = secResult.new_item;
+      const body = {
+        new_item: {
+          kind: ni.kind,
+          title: ni.title,
+          start_iso: ni.start_iso,
+          end_iso: ni.end_iso,
+          all_day: ni.all_day,
+          category: ni.category,
+          event_type: ni.event_type,
+          location: ni.location,
+          create: true,
+        },
+        moves: secResult.plan.moves.map((m) => ({
+          ref_kind: m.ref_kind,
+          ref_id: m.ref_id,
+          title: m.title,
+          new_start_iso: m.new_start_iso,
+          new_end_iso: m.new_end_iso,
+          calendar_id: m.calendar_id || "primary",
+          slot: m.slot || 1,
+          gcal_event_id: m.gcal_event_id || null,
+        })),
+      };
+      const res = await fetch(`${apiBase}/api/secretary/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      const movedN = (data.moved || []).length;
+      const errs = (data.errors || []) as string[];
+      setSecApplied({
+        ok: data.ok,
+        msg: data.ok
+          ? `適用しました（新規 ${data.created ? 1 : 0} 件 / 移動 ${movedN} 件）`
+          : `一部失敗: ${errs.join(" / ")}`,
+      });
+    } catch (e) {
+      setSecApplied({ ok: false, msg: e instanceof Error ? e.message : "適用に失敗しました" });
+    } finally {
+      setSecApplying(false);
+    }
+  };
+
+  // ─── 秘書: kshgks59 のメールから行動アイテム抽出 ───
+  const runFromEmail = async () => {
+    setEmailLoading(true);
+    setSecError(null);
+    setEmailItems(null);
+    try {
+      const res = await fetch(`${apiBase}/api/secretary/from-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slot: 2, days: 7, max_emails: 30, days_ahead: 7, engine: "gpt" }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      setEmailItems((data.items || []) as EmailItem[]);
+    } catch (e) {
+      setSecError(e instanceof Error ? e.message : "メール解析に失敗しました");
+    } finally {
+      setEmailLoading(false);
+    }
+  };
 
   const handleExtract = async () => {
     setLoading(true);
@@ -409,6 +569,7 @@ export default function GmailSyncPage() {
                 {/* Mode tabs */}
                 <div className="flex gap-2 mb-5 flex-wrap">
                   {([
+                    ["secretary", "🧠 秘書 (自動調整)"],
                     ["gmail", "📧 Gmail"],
                     ["pdf", "📄 PDF"],
                     ["excel", "📊 Excel (時間割)"],
@@ -437,6 +598,173 @@ export default function GmailSyncPage() {
                     </button>
                   ))}
                 </div>
+
+                {mode === "secretary" && (
+                  <div className="flex flex-col gap-4">
+                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                      突発の予定や予定外の仕事を入れると、締切以外の動かせる予定を空き時間へ組み直す案を出します。<br />
+                      例:「明日15時から急な来客対応1時間」「金曜までに採点、3時間かかる」
+                    </p>
+                    <textarea
+                      value={secText}
+                      onChange={(e) => setSecText(e.target.value)}
+                      disabled={secLoading}
+                      rows={3}
+                      placeholder="突発の予定 / 仕事を自由に入力"
+                      className="w-full px-4 py-3 rounded-xl text-sm resize-y"
+                      style={{
+                        background: "var(--color-background)",
+                        border: "1px solid var(--color-border)",
+                        color: "var(--color-text)",
+                      }}
+                    />
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <button
+                        onClick={runIntake}
+                        disabled={secLoading || !secText.trim()}
+                        className="px-5 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+                        style={{ background: "var(--color-accent)", color: "white" }}
+                      >
+                        {secLoading ? "解析中..." : "組み直し案を作る"}
+                      </button>
+                      <button
+                        onClick={runFromEmail}
+                        disabled={emailLoading}
+                        className="px-4 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50"
+                        style={{ background: "transparent", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+                      >
+                        {emailLoading ? "メール解析中..." : "📧 kshgks59 のメールから日程を組む"}
+                      </button>
+                    </div>
+
+                    {secError && (
+                      <div className="rounded-xl p-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid var(--color-red)", color: "var(--color-red)" }}>
+                        {secError}
+                      </div>
+                    )}
+
+                    {/* 組み直し案 */}
+                    {secResult && (
+                      <div className="rounded-xl p-4 flex flex-col gap-3" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                        {secResult.plan.summary && (
+                          <p className="text-sm" style={{ color: "var(--color-text)" }}>{secResult.plan.summary}</p>
+                        )}
+                        {/* 新しく入るもの */}
+                        <div className="rounded-lg p-3" style={{ background: "rgba(59,130,246,0.08)", border: "1px solid var(--color-accent)" }}>
+                          <span className="text-xs font-medium" style={{ color: "var(--color-accent)" }}>
+                            {secResult.new_item.kind === "fixed_event" ? "新しい予定" : "新しい仕事"}
+                          </span>
+                          <p className="text-sm font-medium mt-1" style={{ color: "var(--color-text)" }}>
+                            {secResult.new_item.title}
+                          </p>
+                          <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                            {formatDateTime(secResult.new_item.start_iso)}
+                            {!secResult.new_item.all_day && ` 〜 ${formatDateTime(secResult.new_item.end_iso).slice(-5)}`}
+                          </p>
+                          {secResult.new_item.interpretation && (
+                            <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>📝 {secResult.new_item.interpretation}</p>
+                          )}
+                        </div>
+
+                        {/* 移動する予定 */}
+                        {secResult.plan.moves.length > 0 ? (
+                          <div className="flex flex-col gap-2">
+                            <span className="text-xs font-medium" style={{ color: "var(--color-text-muted)" }}>
+                              組み直し ({secResult.plan.moves.length} 件)
+                            </span>
+                            {secResult.plan.moves.map((m, i) => (
+                              <div key={i} className="rounded-lg p-3 text-sm" style={{ background: "var(--color-surface)", border: `1px solid ${m.protected ? "var(--color-red)" : "var(--color-border)"}` }}>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-medium" style={{ color: "var(--color-text)" }}>{m.title}</span>
+                                  {m.protected && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(239,68,68,0.12)", color: "var(--color-red)" }}>
+                                      ⚠ 家族/健康
+                                    </span>
+                                  )}
+                                  <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "var(--color-background)", color: "var(--color-text-muted)" }}>
+                                    {m.ref_kind === "task" ? "タスク" : "予定"}
+                                  </span>
+                                </div>
+                                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                                  {m.cur_start ? `${formatDateTime(m.cur_start)} ` : ""}→ <span style={{ color: "var(--color-text)" }}>{formatDateTime(m.new_start_iso)}</span>
+                                </p>
+                                {m.reason && <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{m.reason}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm" style={{ color: "var(--color-green)" }}>
+                            ✓ 既存予定とぶつからないので、そのまま追加できます
+                          </p>
+                        )}
+
+                        {secResult.plan.balance_note && secResult.plan.balance_note !== "影響なし" && (
+                          <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>⚖ {secResult.plan.balance_note}</p>
+                        )}
+
+                        {secResult.plan.unplaceable.length > 0 && (
+                          <div className="text-xs" style={{ color: "var(--color-red)" }}>
+                            置けなかった: {secResult.plan.unplaceable.map((u) => `${u.title} (${u.why})`).join(", ")}
+                          </div>
+                        )}
+
+                        {/* 適用 */}
+                        {secApplied ? (
+                          <div className="text-sm" style={{ color: secApplied.ok ? "var(--color-green)" : "var(--color-red)" }}>
+                            {secApplied.ok ? "✓ " : "⚠ "}{secApplied.msg}
+                          </div>
+                        ) : (
+                          <button
+                            onClick={applyPlan}
+                            disabled={secApplying}
+                            className="self-start px-5 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+                            style={{ background: "var(--color-green)", color: "white" }}
+                          >
+                            {secApplying ? "適用中..." : "この案で Calendar を更新"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* メールから抽出したアイテム */}
+                    {emailItems && (
+                      <div className="rounded-xl p-4 flex flex-col gap-2" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                        <span className="text-xs font-medium" style={{ color: "var(--color-text-muted)" }}>
+                          kshgks59 のメールから抽出した行動 ({emailItems.length} 件)
+                        </span>
+                        {emailItems.length === 0 && (
+                          <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>対応が必要なメールは見つかりませんでした</p>
+                        )}
+                        {emailItems.map((it, i) => (
+                          <div key={i} className="rounded-lg p-3 text-sm" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium" style={{ color: "var(--color-text)" }}>{it.title}</span>
+                              <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "var(--color-background)", color: "var(--color-text-muted)" }}>
+                                {it.kind === "fixed_event" ? "予定" : "仕事"}
+                              </span>
+                              {it.deadline_date && (
+                                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(239,68,68,0.12)", color: "var(--color-red)" }}>
+                                  締切 {it.deadline_date}
+                                </span>
+                              )}
+                            </div>
+                            {it.suggested_start_iso && (
+                              <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>候補: {formatDateTime(it.suggested_start_iso)}</p>
+                            )}
+                            <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>📧 {it.source_subject} — {it.reason}</p>
+                            <button
+                              onClick={() => { setSecText(it.title + (it.deadline_date ? `（締切 ${it.deadline_date}）` : "") + (it.suggested_start_iso ? `（${formatDateTime(it.suggested_start_iso)}）` : "")); setMode("secretary"); }}
+                              className="mt-2 text-xs underline"
+                              style={{ color: "var(--color-accent)" }}
+                            >
+                              ↑ 上の入力欄に入れて組み直し案を作る
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {mode === "pdf" && (
                   <div className="flex items-center gap-3 flex-wrap">

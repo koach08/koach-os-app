@@ -17,6 +17,7 @@ from data_manager import (
     now_jst,
 )
 from gcal import is_configured as gcal_is_configured, create_event as gcal_create_event
+from router import call_ai, DEFAULT_MODELS
 
 router = APIRouter()
 
@@ -249,3 +250,118 @@ def task_to_calendar(task_id: str, req: TaskToCalendarRequest):
         "html_link": event.get("htmlLink"),
         "event_type_used": event.get("_event_type_used", "default"),
     }
+
+
+# ─── Auto-reschedule (schedule-manager から移植) ─────────────────────────
+
+RESCHEDULE_SYSTEM = """あなたは大学教員 (志柿) のスケジュール最適化アシスタント。
+1 つのタスクが変わったので、他の未完了タスクの締切・時刻の組み直し案を出す。
+
+ルール:
+- 優先順位: 家族 > 学生 > 研究 > プラットフォーム > 収益 > 個人成長
+- 裁量労働制で時間は柔軟だが、締切 (deadline / 提出) は厳守
+- 会議・授業は動かさない
+- 締切が近いタスクは前倒し推奨
+- 変更不要なら suggestions は空配列
+
+出力 JSON (これのみ。Markdown 禁止):
+{
+  "suggestions": [
+    {"task_id":"task_xxx","new_due_date":"YYYY-MM-DD","new_due_time":"HH:MM"|null,"reason":"理由"}
+  ],
+  "summary": "全体アドバイス 1〜2 文。です/ます調、抽象名詞『〜性』NG"
+}"""
+
+
+class RescheduleReq(BaseModel):
+    changed_task_id: str
+    action: str = "completed"   # completed | rescheduled | deleted | added
+    engine: str = "gpt"
+
+
+@router.post("/tasks/reschedule")
+def reschedule(req: RescheduleReq):
+    """1 タスクの変更を起点に、他タスクの組み直し案を AI に出させる (提案のみ)。"""
+    state = _materialize_state()
+    changed = state.get(req.changed_task_id)
+    if not changed and req.action != "deleted":
+        raise HTTPException(404, "changed task not found")
+
+    pending = [t for t in state.values() if t.get("status") != "done"
+               and t.get("id") != req.changed_task_id]
+    if not pending:
+        return {"suggestions": [], "summary": "未完了タスクが他にありません。"}
+
+    today = now_jst().strftime("%Y-%m-%d")
+    lines = "\n".join(
+        f"- [{t['id']}] {t.get('title','')} | カテゴリ {t.get('category','other')} "
+        f"| 優先度 {t.get('priority','medium')} | 期限 {t.get('due_date') or '未設定'} "
+        f"{t.get('due_time') or ''} | 状態 {t.get('status','todo')} "
+        f"| 見積 {t.get('estimated_minutes') or '?'}分"
+        for t in pending
+    )
+
+    act_label = {"completed": "完了", "rescheduled": "日程変更",
+                 "deleted": "削除", "added": "追加"}.get(req.action, req.action)
+    changed_title = (changed or {}).get("title", "(削除済みタスク)")
+    user = f"""今日: {today}
+
+変更: タスク「{changed_title}」が{act_label}されました。
+
+現在の未完了タスク:
+{lines}
+
+他タスクの組み直し案を JSON で出してください。"""
+
+    engine = req.engine if req.engine in DEFAULT_MODELS else "gpt"
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": user}],
+            system=RESCHEDULE_SYSTEM,
+            engine=engine,
+            model=DEFAULT_MODELS[engine],
+            max_tokens=1500,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"reschedule failed: {e}")
+
+    import json as _json
+    import re as _re
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = _re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = _json.loads(cleaned)
+    except Exception:
+        m = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
+        parsed = _json.loads(m.group(0)) if m else {"suggestions": [], "summary": ""}
+
+    return {
+        "suggestions": parsed.get("suggestions", []),
+        "summary": parsed.get("summary", ""),
+        "engine_used": engine,
+    }
+
+
+class RescheduleApplyReq(BaseModel):
+    suggestions: list[dict] = []   # [{task_id, new_due_date, new_due_time}]
+
+
+@router.post("/tasks/reschedule/apply")
+def reschedule_apply(req: RescheduleApplyReq):
+    """組み直し案を実タスクに反映 (due_date/due_time 更新)。"""
+    applied = []
+    for s in req.suggestions:
+        tid = s.get("task_id")
+        task = _get(tid) if tid else None
+        if not task:
+            continue
+        new = {**task, "updated_at": timestamp_jst()}
+        if s.get("new_due_date"):
+            new["due_date"] = s["new_due_date"]
+        if "new_due_time" in s:
+            new["due_time"] = s.get("new_due_time")
+        _save(new)
+        applied.append(tid)
+    return {"applied": applied, "count": len(applied)}

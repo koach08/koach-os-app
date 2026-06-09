@@ -515,10 +515,27 @@ def list_upcoming_events(days_ahead: int = 7) -> list[dict]:
     return [e for e in events if (e.get("end_iso") or e.get("start_iso") or "") >= now_iso[:19]]
 
 
-def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> list[dict]:
-    """Fetch recent emails from a single slot. Uses Gmail batch API for speed."""
+# 大学事務 (総務・教務・会計) など、取りこぼすと困る重要メールを必ず拾うための絞り込み。
+# 一般 fetch の maxResults 上限で押し出されても、この第2パスで確実に含める。
+IMPORTANT_EMAIL_QUERY = (
+    "(from:hokudai.ac.jp OR from:ac.jp "
+    "OR 委員会 OR 会議 OR 開催通知 OR 開催のお知らせ OR 教授会 "
+    "OR 締切 OR 〆切 OR 提出期限 OR 提出のお願い OR 期限 "
+    "OR 会計 OR 経理 OR 旅費 OR 立替 OR 精算 OR 請求 OR 支払 "
+    "OR 総務 OR 教務 OR 事務 OR 面談 OR 出張 OR 通知)"
+)
+
+
+def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1,
+                       query_extra: str = "") -> list[dict]:
+    """Fetch recent emails from a single slot. Uses Gmail batch API for speed.
+
+    query_extra: 追加の Gmail 検索式 (例: 重要送信者の絞り込み)。
+    """
     service = _get_gmail_service(slot)
     query = f"newer_than:{days}d -in:spam -in:trash"
+    if query_extra:
+        query += f" {query_extra}"
 
     listing = service.users().messages().list(
         userId="me", q=query, maxResults=max_results
@@ -559,16 +576,45 @@ def list_recent_emails(days: int = 3, max_results: int = 20, slot: int = 1) -> l
     return emails
 
 
-def list_recent_emails_all_accounts(days: int = 3, max_results: int = 20) -> list[dict]:
-    """Fetch recent emails from ALL configured accounts. Returns merged list."""
+def list_recent_emails_all_accounts(days: int = 3, max_results: int = 20,
+                                    include_important: bool = True) -> list[dict]:
+    """Fetch recent emails from ALL configured accounts. Returns merged list (id で重複排除).
+
+    include_important=True のとき、一般 fetch とは別に「重要メール」絞り込みの第2パスを
+    各 slot で走らせて必ず含める。これで大学事務 (総務・教務・会計) の連絡が
+    maxResults 上限で押し出されても取りこぼさない。
+    """
     all_emails: list[dict] = []
     errors: list[str] = []
+    seen: set[str] = set()
+
+    def _merge(emails: list[dict]):
+        for e in emails:
+            eid = e.get("id", "")
+            if eid and eid in seen:
+                continue
+            if eid:
+                seen.add(eid)
+            all_emails.append(e)
+
     for slot in _configured_slots():
         try:
-            emails = list_recent_emails(days=days, max_results=max_results, slot=slot)
-            all_emails.extend(emails)
+            _merge(list_recent_emails(days=days, max_results=max_results, slot=slot))
         except Exception as e:
             errors.append(f"slot {slot}: {e}")
+
+    if include_important:
+        for slot in _configured_slots():
+            try:
+                _merge(list_recent_emails(
+                    days=days,
+                    max_results=max(max_results, 40),
+                    slot=slot,
+                    query_extra=IMPORTANT_EMAIL_QUERY,
+                ))
+            except Exception as e:
+                errors.append(f"slot {slot} (important): {e}")
+
     # If everything failed, raise the first error so caller sees it
     if not all_emails and errors:
         raise RuntimeError("; ".join(errors))

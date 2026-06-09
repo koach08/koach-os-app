@@ -124,7 +124,7 @@ class ExtractFromEmailsRequest(BaseModel):
     model: str | None = None
 
 
-BATCH_SIZE = 15  # emails per AI call — keeps each call under ~30s
+BATCH_SIZE = 8  # emails per AI call — small enough that JSON output rarely truncates
 
 
 def _build_system_prompt(today_str: str) -> str:
@@ -177,7 +177,7 @@ def _process_batch(batch_emails: list, system_prompt: str, engine: str, model: s
             system=system_prompt,
             engine=engine,
             model=model,
-            max_tokens=8000,
+            max_tokens=16000,
         )
     except Exception as e:
         return [], f"AI call failed: {e}", None
@@ -187,11 +187,10 @@ def _process_batch(batch_emails: list, system_prompt: str, engine: str, model: s
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    if not cleaned.startswith("["):
-        first = cleaned.find("[")
-        last = cleaned.rfind("]")
-        if first != -1 and last != -1 and last > first:
-            cleaned = cleaned[first:last + 1]
+    # 配列の開始位置に揃える (前置きテキストがあっても拾う)
+    first = cleaned.find("[")
+    if first > 0:
+        cleaned = cleaned[first:]
 
     parse_error = None
     try:
@@ -199,8 +198,19 @@ def _process_batch(batch_emails: list, system_prompt: str, engine: str, model: s
         if not isinstance(proposals, list):
             proposals = []
     except json.JSONDecodeError as e:
-        proposals = []
+        # 出力が途中で切れていても、完成済みオブジェクトまで救出する
+        # (素の json.loads だけだとバッチ全員 = 約8通分の抽出を取りこぼす)
         parse_error = str(e)
+        proposals = []
+        repaired = _repair_truncated_json_array(cleaned)
+        if repaired is not None:
+            try:
+                salvaged = json.loads(repaired)
+                if isinstance(salvaged, list):
+                    proposals = salvaged
+                    parse_error = f"recovered_partial: {e} (kept {len(salvaged)})"
+            except json.JSONDecodeError:
+                proposals = []
 
     normalized = []
     for p in proposals:

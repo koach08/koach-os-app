@@ -128,21 +128,30 @@ BATCH_SIZE = 8  # emails per AI call — small enough that JSON output rarely tr
 
 
 def _build_system_prompt(today_str: str) -> str:
-    return f"""You extract calendar event candidates and reminders from emails.
+    return f"""You extract calendar event candidates from emails for a Hokkaido University
+associate professor (志柿). Goal: surface the user's REAL commitments — especially
+university work — and DROP marketing so the list stays manageable.
 
 TODAY IS: {today_str}
 
-Be GENEROUS in extracting — better to over-include than miss something.
-Items to extract:
-- Meetings, committees, classes, exams (会議・委員会・授業・試験)
-- Deadlines, due dates, submission requests (締切・提出期限)
-- Appointments, interviews, calls (面談・面接)
-- Reminders about ongoing things (進行中の試験運用変更・連絡事項) — even if no explicit future date, include as confidence=low with today's date
-- Travel, flights, reservations
-- ANY mention of a specific date or time someone needs to attend / submit / do something
+INCLUDE (extract these):
+- 大学事務 (総務 / 教務 / 会計) の連絡: 会議・委員会・教授会・授業/講義・休講補講・試験・
+  締切・提出・履修・成績・出張・旅費精算・面談
+- 他の大学教員 / 共著者 / 学生 からの 授業・課題・締切・研究・学会・科研費 の連絡
+  (送信元が個人アドレス @gmail 等でも、内容が教育・研究・学務なら必ず含める)
+- 本人自身の予約・予定: 旅行・ホテル・フライト・医療通院・受験(TOEFL 等)・家族/保育園
+- 本人が出席 / 提出 / 対応する必要がある、日時の明示された予定
 
-DO include events from the recent past if the email talks about ongoing situations
-(e.g., "中間試験中の入室キーワード" relates to an ongoing exam period — include it).
+DROP (これらは出力しない — ノイズ):
+- 副業・求人の案内: 案件紹介・事業説明会・座談会・スカウト
+  (サンカク / クラウドワークス / リクルート / 「副業」「案件」系)
+- セール・割引・クーポン・ポイント・キャンペーン・メルマガ・ニュースレターの販促
+- ショッピング / サブスクの宣伝告知 (コストコ / アカチャンホンポ / SUZURI / モンベル 等)
+- 決済受領・出金・請求通知のみで本人の行動が不要なもの (Zaim / 各種 receipt)
+- ニュース要約 (TLDR / Bloomberg / NewsPicks 等) の本文中に出てくる日付
+
+判断基準: 「本人が出る/出す/対応する予定」または「大学・教育・研究の連絡」なら INCLUDE。
+「売り込み・販促・案件紹介」なら、たとえ具体的な日付があっても DROP。
 
 Output rules:
 - Output ONLY a JSON array. No markdown, no commentary.
@@ -153,14 +162,13 @@ Output rules:
 - confidence: "high" (explicit date/time), "medium" (inferred), "low" (vague or implicit)
 - event_type:
     "meeting" — 会議・打ち合わせ・面談・授業
-    "committee" — 委員会・理事会・審議会
+    "committee" — 委員会・理事会・審議会・教授会
     "deadline" — 締め切り・提出期限・due
     "default" — リマインダー、その他
-- SKIP only obvious marketing/spam (Skyscanner deals, Amazon promos, newsletters with no specific user action)
 - title: concise, in the email's language (Japanese stays Japanese)
-- If multiple events in one email, output multiple entries
+- If multiple real commitments are in one email, output multiple entries
 
-Return [] only if absolutely nothing actionable. When in doubt, INCLUDE."""
+Return [] if nothing actionable. 迷ったら、学務・本人予定は残し、販促は捨てる。"""
 
 
 def _process_batch(batch_emails: list, system_prompt: str, engine: str, model: str) -> tuple[list, str | None, str | None]:

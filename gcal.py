@@ -515,14 +515,16 @@ def list_upcoming_events(days_ahead: int = 7) -> list[dict]:
     return [e for e in events if (e.get("end_iso") or e.get("start_iso") or "") >= now_iso[:19]]
 
 
-# 大学事務 (総務・教務・会計) など、取りこぼすと困る重要メールを必ず拾うための絞り込み。
+# 大学・学術関係 (大学事務 + 他の教員/共著者/学生) を必ず拾うための絞り込み。
 # 一般 fetch の maxResults 上限で押し出されても、この第2パスで確実に含める。
+# 販促に当たる汎用語 (締切/期限/通知/請求/セール 等) は意図的に外し、
+# 取捨は抽出プロンプト側の DROP 方針に委ねる (= 副業案内・セールは混ぜない)。
 IMPORTANT_EMAIL_QUERY = (
-    "(from:hokudai.ac.jp OR from:ac.jp "
-    "OR 委員会 OR 会議 OR 開催通知 OR 開催のお知らせ OR 教授会 "
-    "OR 締切 OR 〆切 OR 提出期限 OR 提出のお願い OR 期限 "
-    "OR 会計 OR 経理 OR 旅費 OR 立替 OR 精算 OR 請求 OR 支払 "
-    "OR 総務 OR 教務 OR 事務 OR 面談 OR 出張 OR 通知)"
+    "(from:ac.jp OR from:hokudai.ac.jp OR from:imc.hokudai.ac.jp OR from:elms.hokudai.ac.jp "
+    "OR 委員会 OR 教授会 OR 教務 OR 総務 OR 学務 "
+    "OR 講義 OR 授業 OR 休講 OR 補講 OR シラバス OR 履修 OR 採点 OR 成績 OR 試験 "
+    "OR 学会 OR 科研費 OR 査読 OR 共同研究 "
+    "OR 旅費 OR 精算 OR 立替 OR 出張)"
 )
 
 

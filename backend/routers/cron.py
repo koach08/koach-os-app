@@ -1,14 +1,15 @@
 """
 Cron endpoints — external scheduled triggers (GitHub Actions etc.)
 
-- POST /api/cron/notify-brief   : Daily Brief を生成して LINE Messaging API へ push
+- POST /api/cron/notify-brief   : Daily Brief を生成して Resend で Gmail に送信
 - POST /api/cron/snapshot-data  : data/ 配下を tar.gz → base64 で return
 
 Auth: header `X-Cron-Token` が env CRON_TOKEN と一致しないと 401。
 
-LINE env:
-- LINE_CHANNEL_ACCESS_TOKEN : LINE Developers の Messaging API channel → 「チャネルアクセストークン(長期)」
-- LINE_USER_ID              : 送信先 userId (LINE Official Account Manager の「友だち」一覧、または webhook で取得)
+Resend env:
+- RESEND_API_KEY : https://resend.com/ で取得 (re_ から始まる文字列)
+- NOTIFY_EMAIL   : 送信先 (例: japanesebusinessman4@gmail.com)
+- NOTIFY_FROM    : 送信元 (省略時は `Koach OS <onboarding@resend.dev>`)
 """
 
 import os
@@ -17,8 +18,8 @@ import json
 import base64
 import tarfile
 import urllib.request
+import urllib.error
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -35,47 +36,54 @@ def _check_token(token: str | None) -> None:
         raise HTTPException(401, "invalid cron token")
 
 
-def _format_brief_for_line(brief: dict) -> str:
-    """Daily Brief JSON を LINE 用テキストに整形 (LINE text message は 5000 字、実用 2000 字以下に抑える)"""
-    lines = [f"☀️ Daily Brief  {datetime.now().strftime('%Y-%m-%d (%a)')}", ""]
+def _format_brief_text(brief: dict) -> str:
+    """Daily Brief JSON を text/plain に整形"""
+    lines = [f"Daily Brief  {datetime.now().strftime('%Y-%m-%d (%a)')}", ""]
 
     schedule = brief.get("schedule") or []
     if schedule:
-        lines.append("📅 今日の予定")
-        for ev in schedule[:8]:
+        lines.append("■ 今日の予定")
+        for ev in schedule[:10]:
             title = ev.get("title", "(no title)")
             start = ev.get("start", "") or ""
             time_label = start.split("T")[1][:5] if "T" in start else "終日"
-            lines.append(f"  ・{time_label}  {title[:50]}")
+            lines.append(f"  ・{time_label}  {title[:80]}")
         lines.append("")
 
     backlog = brief.get("backlog") or []
     if backlog:
-        lines.append("📋 今日のバックログ")
-        for b in backlog[:6]:
+        lines.append("■ 今日のバックログ")
+        for b in backlog[:8]:
             t = b.get("title") or b.get("text") or ""
-            lines.append(f"  ・{t[:50]}")
+            lines.append(f"  ・{t[:80]}")
         lines.append("")
 
     tomorrow = brief.get("schedule_tomorrow") or []
     if tomorrow:
-        lines.append("📅 明日の予定")
-        for ev in tomorrow[:4]:
+        lines.append("■ 明日の予定")
+        for ev in tomorrow[:6]:
             title = ev.get("title", "(no title)")
             start = ev.get("start", "") or ""
             time_label = start.split("T")[1][:5] if "T" in start else "終日"
-            lines.append(f"  ・{time_label}  {title[:50]}")
+            lines.append(f"  ・{time_label}  {title[:80]}")
         lines.append("")
 
     ai = brief.get("ai_brief") or ""
     if ai:
-        lines.append("🧭 AI 問いかけ")
-        lines.append(ai[:600])
+        lines.append("■ AI 問いかけ")
+        lines.append(ai)
 
-    text = "\n".join(lines)
-    if len(text) > 1900:
-        text = text[:1900] + "\n…(truncated)"
-    return text
+    return "\n".join(lines)
+
+
+def _format_brief_html(brief: dict, text: str) -> str:
+    """text 版から軽い HTML を作成 (Gmail での見やすさ用)"""
+    body = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    body = body.replace("\n", "<br>")
+    return f"""<!doctype html>
+<html><body style="font-family: -apple-system, sans-serif; line-height: 1.6; max-width: 600px;">
+<div style="white-space: pre-wrap;">{body}</div>
+</body></html>"""
 
 
 @router.post("/cron/notify-brief")
@@ -84,10 +92,11 @@ def notify_brief(
     x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
 ):
     _check_token(x_cron_token)
-    access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-    user_id = os.environ.get("LINE_USER_ID", "")
-    if not access_token or not user_id:
-        raise HTTPException(503, "LINE_CHANNEL_ACCESS_TOKEN or LINE_USER_ID not configured")
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    to_email = os.environ.get("NOTIFY_EMAIL", "")
+    from_email = os.environ.get("NOTIFY_FROM", "Koach OS <onboarding@resend.dev>")
+    if not api_key or not to_email:
+        raise HTTPException(503, "RESEND_API_KEY or NOTIFY_EMAIL not configured")
 
     from routers.daily_brief import daily_brief as gen_brief
     try:
@@ -95,30 +104,36 @@ def notify_brief(
     except Exception as e:
         raise HTTPException(500, f"brief generation failed: {e}")
 
-    text = _format_brief_for_line(brief)
+    text = _format_brief_text(brief)
+    html = _format_brief_html(brief, text)
+    subject = f"☀ Daily Brief {datetime.now().strftime('%m/%d (%a)')}"
     payload = json.dumps({
-        "to": user_id,
-        "messages": [{"type": "text", "text": text}],
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "text": text,
+        "html": html,
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.line.me/v2/bot/message/push",
+        "https://api.resend.com/emails",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {access_token}",
+            "Authorization": f"Bearer {api_key}",
         },
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
             status = res.status
+            body = res.read().decode("utf-8", errors="replace")[:200]
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:300]
-        raise HTTPException(502, f"line push failed: HTTP {e.code} {body}")
+        raise HTTPException(502, f"resend failed: HTTP {e.code} {body}")
     except Exception as e:
-        raise HTTPException(502, f"line push failed: {e}")
+        raise HTTPException(502, f"resend failed: {e}")
 
-    return {"ok": True, "line_status": status, "chars_sent": len(text)}
+    return {"ok": True, "resend_status": status, "chars_sent": len(text), "response": body}
 
 
 _SECRET_NAME_HINTS = ("token", "credential", "secret", "_b64")

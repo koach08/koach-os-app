@@ -120,6 +120,8 @@ def notify_brief(
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            "User-Agent": "koach-os/1.0 (+https://koach-os.vercel.app)",
+            "Accept": "application/json",
         },
         method="POST",
     )

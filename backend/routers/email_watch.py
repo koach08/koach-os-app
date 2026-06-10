@@ -223,13 +223,21 @@ def scan(req: ScanReq):
         # 受信より後の sent があれば返信済み (1 分マージン)
         return latest_sent[thread_id] > recv_ms + 60_000
 
-    # まず既存 followups の済み判定を再評価 (受信日 < 自分の最新 sent なら done)
+    # 既存 followups の済み判定を再評価:
+    # - done_reason が "manual" のものは触らない (人間の意思)
+    # - auto 系で done になっているが、新ロジックで該当しないものは done を解除 (旧ロジックの誤判定救済)
+    # - まだ done でないが受信後 sent があるものは done に
     for fid, fp in items.items():
+        reason = fp.get("done_reason") or ""
+        replied_after = _is_replied_after_receive(fp.get("thread_id", ""), fp.get("received_at", ""))
         if fp.get("done_at"):
-            continue
-        if _is_replied_after_receive(fp.get("thread_id", ""), fp.get("received_at", "")):
-            fp["done_at"] = timestamp_jst()
-            fp["done_reason"] = "auto: 返信済み (sent items 検出, 受信後)"
+            if reason.startswith("auto") and not replied_after:
+                fp["done_at"] = None
+                fp["done_reason"] = None
+        else:
+            if replied_after:
+                fp["done_at"] = timestamp_jst()
+                fp["done_reason"] = "auto: 返信済み (sent items 検出, 受信後)"
 
     # 新規メールのみ classify
     new_emails = [e for e in emails if e["id"] not in items]

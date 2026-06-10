@@ -41,15 +41,19 @@ def _write(data: dict):
     FOLLOWUPS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _replied_thread_ids(slot: int, days: int = 90) -> set[str]:
-    """自分が send / 既に reply したスレッドの threadId 集合。"""
+def _latest_sent_per_thread(slot: int, days: int = 90) -> dict[str, int]:
+    """threadId → 自分が最後に送った internalDate (ms since epoch, int)。
+
+    同じ thread で過去に別件で send していて、その後新しい受信が来た場合に
+    誤って「対応済み」と判定するのを防ぐため、判定側で受信日と比較する。
+    """
     try:
         from gcal import _get_gmail_service
         service = _get_gmail_service(slot)
     except Exception:
-        return set()
+        return {}
     q = f"newer_than:{days}d in:sent"
-    out: set[str] = set()
+    out: dict[str, int] = {}
     try:
         listing = service.users().messages().list(userId="me", q=q, maxResults=500).execute()
         refs = listing.get("messages", []) or []
@@ -78,11 +82,31 @@ def _replied_thread_ids(slot: int, days: int = 90) -> set[str]:
                 continue
         for r in results.values():
             tid = r.get("threadId")
-            if tid:
-                out.add(tid)
+            if not tid:
+                continue
+            try:
+                ts = int(r.get("internalDate", "0"))
+            except Exception:
+                ts = 0
+            if ts > out.get(tid, 0):
+                out[tid] = ts
     except Exception:
         pass
     return out
+
+
+def _received_ms(date_header: str) -> int:
+    """email Date ヘッダから ms since epoch を取得。parse 不可なら 0。"""
+    if not date_header:
+        return 0
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(date_header)
+        if dt is None:
+            return 0
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
 
 
 CLASSIFY_PROMPT = """あなたは志柿浩一郎 (北海道大学 准教授・kshigaki@imc.hokudai.ac.jp、kshgks59@gmail.com に転送) のメール仕分け担当。
@@ -102,16 +126,29 @@ CLASSIFY_PROMPT = """あなたは志柿浩一郎 (北海道大学 准教授・ks
 ]
 
 判定ルール:
-- university: 学部・授業・委員会・学生関係・大学事務・北大ドメイン全般 → 基本 requires_action=true
-- research: 共著者・査読・学会・科研費 → requires_action は文脈次第
-- promo: ニュースレター・広告・通知 → requires_action=false
-- system: 自動通知 (パスワードリセット / OAuth) → requires_action=false
+- **最優先**: From が hokudai.ac.jp / imc.hokudai.ac.jp ドメイン (北大全体) で **教員個人にアクションが要るもの** → category=university, requires_action=true 固定、urgency は medium 以上 (締切明示なら high)
+- ただし北大ドメインでも、大学院入試 / ネット出願 / 募集要項 / 全学広報 / 学生向け案内 / 受験生向け配信のような「**多数配信・教員個人にアクション不要**」のものは category=promo, requires_action=false にしてよい (志柿は教員、出願ではなく出題側)
+- university: 学部・授業・委員会・学生関係・大学事務・北大関連 → 基本 requires_action=true
+- research: 他大学 (.ac.jp / .edu) の教員・共著者・査読・学会・科研費 → 業務連絡 (日程相談 / 会議調整 / 共同研究 / 論文相談 / 学生指導) なら requires_action=true。純粋な情報共有のみ false
+- promo: ニュースレター・広告・配信通知 (mailmag / no-reply / news@) → requires_action=false
+- system: 自動通知 (パスワードリセット / OAuth / GitHub PR 通知) → requires_action=false
 - personal: 家族・友人・サブスク管理 → 文脈次第
-- requires_action: 返信や行動 (出席登録 / 提出 / 確認応答) が必要か
-- urgency: deadline_date があれば high。明確な締切表現 (締切 / までに / 〆切) → medium 以上
+- 「先生」「教授」「准教授」「博士」が From に入る人間のメール、または件名に「ご相談」「日程」「会議」「お打ち合わせ」「ご依頼」「ご確認」「お願い」を含む → requires_action=true
+- urgency: deadline_date があれば high。明確な締切表現 (締切 / までに / 〆切 / 期日) → medium 以上
 - summary: です/ます調禁止、体言止め可、抽象名詞「〜性」NG
 
 JSON のみ。Markdown 禁止。"""
+
+
+_HOKUDAI_DOMAINS = ("hokudai.ac.jp", "imc.hokudai.ac.jp")
+
+
+def _is_hokudai(from_field: str) -> bool:
+    """From フィールドに北大ドメインが含まれるか"""
+    if not from_field:
+        return False
+    f = from_field.lower()
+    return any(d in f for d in _HOKUDAI_DOMAINS)
 
 
 class ScanReq(BaseModel):
@@ -173,14 +210,26 @@ def scan(req: ScanReq):
 
     state = _load()
     items: dict = state.get("items", {}) or {}
-    replied = _replied_thread_ids(req.slot, days=max(60, req.days * 2))
+    latest_sent = _latest_sent_per_thread(req.slot, days=max(60, req.days * 2))
 
-    # まず thread_id ベースで既存 followups の済みマーク
+    def _is_replied_after_receive(thread_id: str, received_at: str) -> bool:
+        """その thread に対して、受信後に自分が send したメッセージがあるか。"""
+        if not thread_id or thread_id not in latest_sent:
+            return False
+        recv_ms = _received_ms(received_at)
+        if recv_ms == 0:
+            # 受信日 parse 不可なら従来通り「同 thread に sent あり = 返信済み」と扱う (false positive 残るが安全側)
+            return True
+        # 受信より後の sent があれば返信済み (1 分マージン)
+        return latest_sent[thread_id] > recv_ms + 60_000
+
+    # まず既存 followups の済み判定を再評価 (受信日 < 自分の最新 sent なら done)
     for fid, fp in items.items():
-        tid = fp.get("thread_id")
-        if tid and tid in replied and not fp.get("done_at"):
+        if fp.get("done_at"):
+            continue
+        if _is_replied_after_receive(fp.get("thread_id", ""), fp.get("received_at", "")):
             fp["done_at"] = timestamp_jst()
-            fp["done_reason"] = "auto: 返信済み (sent items 検出)"
+            fp["done_reason"] = "auto: 返信済み (sent items 検出, 受信後)"
 
     # 新規メールのみ classify
     new_emails = [e for e in emails if e["id"] not in items]
@@ -199,11 +248,25 @@ def scan(req: ScanReq):
         c = cls_by_id.get(e["id"])
         if not c:
             continue
-        # university / research / personal で requires_action なものだけ保存 (promo / system は捨てる)
-        if not c.get("requires_action"):
+        category = c.get("category", "other")
+        requires_action = bool(c.get("requires_action"))
+        urgency = c.get("urgency", "medium")
+
+        # 北大ドメインは強制で要対応 (ただし AI が promo/system と判定したものは尊重 → 学生向け全体配信などはノイズ)
+        if _is_hokudai(e.get("from", "")) and category not in ("promo", "system"):
+            category = "university"
+            requires_action = True
+            if urgency == "low":
+                urgency = "medium"
+
+        # promo / system は捨てる (自動配信・学生向け広報なので)
+        if category in ("promo", "system"):
             continue
-        if c.get("category") in ("promo", "system"):
+        # それ以外は requires_action=true のみ保存。
+        # ただし category=university (北大) は requires_action 無視で常に保存
+        if category != "university" and not requires_action:
             continue
+
         item = {
             "id": e["id"],
             "thread_id": e.get("thread_id", ""),
@@ -211,8 +274,8 @@ def scan(req: ScanReq):
             "subject": e.get("subject", "(no subject)"),
             "received_at": e.get("date", ""),
             "snippet": e.get("snippet", "")[:300],
-            "category": c.get("category", "other"),
-            "urgency": c.get("urgency", "medium"),
+            "category": category,
+            "urgency": urgency,
             "deadline_date": c.get("deadline_date"),
             "summary": c.get("summary", ""),
             "action_hint": c.get("action_hint", ""),
@@ -221,10 +284,10 @@ def scan(req: ScanReq):
             "done_at": None,
             "snooze_until": None,
         }
-        # 既に返信済みならその場で済み
-        if item["thread_id"] in replied:
+        # 受信日より後に同 thread で自分が送っていたら done
+        if _is_replied_after_receive(item["thread_id"], item["received_at"]):
             item["done_at"] = timestamp_jst()
-            item["done_reason"] = "auto: 返信済み"
+            item["done_reason"] = "auto: 返信済み (受信後 sent)"
         items[item["id"]] = item
         added += 1
 

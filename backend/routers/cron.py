@@ -1,10 +1,14 @@
 """
 Cron endpoints — external scheduled triggers (GitHub Actions etc.)
 
-- POST /api/cron/notify-brief   : Daily Brief を生成して Discord webhook へ送信
+- POST /api/cron/notify-brief   : Daily Brief を生成して LINE Messaging API へ push
 - POST /api/cron/snapshot-data  : data/ 配下を tar.gz → base64 で return
 
 Auth: header `X-Cron-Token` が env CRON_TOKEN と一致しないと 401。
+
+LINE env:
+- LINE_CHANNEL_ACCESS_TOKEN : LINE Developers の Messaging API channel → 「チャネルアクセストークン(長期)」
+- LINE_USER_ID              : 送信先 userId (LINE Official Account Manager の「友だち」一覧、または webhook で取得)
 """
 
 import os
@@ -31,41 +35,41 @@ def _check_token(token: str | None) -> None:
         raise HTTPException(401, "invalid cron token")
 
 
-def _format_brief_for_discord(brief: dict) -> str:
-    """Daily Brief JSON を Discord 用テキストに整形 (2000 文字制限)"""
-    lines = [f"☀️ **Daily Brief — {datetime.now().strftime('%Y-%m-%d (%a)')}**", ""]
+def _format_brief_for_line(brief: dict) -> str:
+    """Daily Brief JSON を LINE 用テキストに整形 (LINE text message は 5000 字、実用 2000 字以下に抑える)"""
+    lines = [f"☀️ Daily Brief  {datetime.now().strftime('%Y-%m-%d (%a)')}", ""]
 
     schedule = brief.get("schedule") or []
     if schedule:
-        lines.append("**📅 今日の予定**")
+        lines.append("📅 今日の予定")
         for ev in schedule[:8]:
             title = ev.get("title", "(no title)")
             start = ev.get("start", "") or ""
             time_label = start.split("T")[1][:5] if "T" in start else "終日"
-            lines.append(f"  • {time_label}  {title[:60]}")
+            lines.append(f"  ・{time_label}  {title[:50]}")
         lines.append("")
 
     backlog = brief.get("backlog") or []
     if backlog:
-        lines.append("**📋 今日のバックログ**")
+        lines.append("📋 今日のバックログ")
         for b in backlog[:6]:
             t = b.get("title") or b.get("text") or ""
-            lines.append(f"  • {t[:60]}")
+            lines.append(f"  ・{t[:50]}")
         lines.append("")
 
     tomorrow = brief.get("schedule_tomorrow") or []
     if tomorrow:
-        lines.append("**📅 明日の予定**")
+        lines.append("📅 明日の予定")
         for ev in tomorrow[:4]:
             title = ev.get("title", "(no title)")
             start = ev.get("start", "") or ""
             time_label = start.split("T")[1][:5] if "T" in start else "終日"
-            lines.append(f"  • {time_label}  {title[:60]}")
+            lines.append(f"  ・{time_label}  {title[:50]}")
         lines.append("")
 
     ai = brief.get("ai_brief") or ""
     if ai:
-        lines.append("**🧭 AI 問いかけ**")
+        lines.append("🧭 AI 問いかけ")
         lines.append(ai[:600])
 
     text = "\n".join(lines)
@@ -80,9 +84,10 @@ def notify_brief(
     x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
 ):
     _check_token(x_cron_token)
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
-    if not webhook_url:
-        raise HTTPException(503, "DISCORD_WEBHOOK_URL not configured")
+    access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    user_id = os.environ.get("LINE_USER_ID", "")
+    if not access_token or not user_id:
+        raise HTTPException(503, "LINE_CHANNEL_ACCESS_TOKEN or LINE_USER_ID not configured")
 
     from routers.daily_brief import daily_brief as gen_brief
     try:
@@ -90,21 +95,30 @@ def notify_brief(
     except Exception as e:
         raise HTTPException(500, f"brief generation failed: {e}")
 
-    text = _format_brief_for_discord(brief)
-    payload = json.dumps({"content": text}).encode("utf-8")
+    text = _format_brief_for_line(brief)
+    payload = json.dumps({
+        "to": user_id,
+        "messages": [{"type": "text", "text": text}],
+    }).encode("utf-8")
     req = urllib.request.Request(
-        webhook_url,
+        "https://api.line.me/v2/bot/message/push",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
             status = res.status
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        raise HTTPException(502, f"line push failed: HTTP {e.code} {body}")
     except Exception as e:
-        raise HTTPException(502, f"discord post failed: {e}")
+        raise HTTPException(502, f"line push failed: {e}")
 
-    return {"ok": True, "discord_status": status, "chars_sent": len(text)}
+    return {"ok": True, "line_status": status, "chars_sent": len(text)}
 
 
 _SECRET_NAME_HINTS = ("token", "credential", "secret", "_b64")

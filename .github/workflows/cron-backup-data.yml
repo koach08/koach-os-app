@@ -1,0 +1,78 @@
+name: Daily Data Backup
+
+on:
+  schedule:
+    # 15:00 UTC = 00:00 JST (深夜0時)
+    - cron: "0 15 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Init isolated workspace on data-backup branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir backup-work && cd backup-work
+          git init -q -b data-backup
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git fetch -q origin data-backup; then
+            git reset --hard origin/data-backup
+          else
+            echo "# data backup branch (managed by .github/workflows/cron-backup-data.yml)" > README.md
+            mkdir -p snapshots
+            git add README.md
+            git commit -q -m "init data-backup branch"
+          fi
+
+      - name: Fetch snapshot from backend
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$BACKEND_URL" ] || [ -z "$CRON_TOKEN" ]; then
+            echo "::error::BACKEND_URL or CRON_TOKEN secret is missing"
+            exit 1
+          fi
+          cd backup-work
+          curl -fsSL -X POST "$BACKEND_URL/api/cron/snapshot-data" \
+            -H "X-Cron-Token: $CRON_TOKEN" \
+            -H "Content-Type: application/json" \
+            -o snapshot.json
+          python3 - <<'PY'
+          import json, base64, pathlib
+          from datetime import datetime, timezone, timedelta
+          with open("snapshot.json") as f:
+              d = json.load(f)
+          assert d.get("ok"), d
+          raw = base64.b64decode(d["data_base64"])
+          jst = timezone(timedelta(hours=9))
+          stamp = datetime.now(jst).strftime("%Y-%m-%d")
+          pathlib.Path("snapshots").mkdir(exist_ok=True)
+          pathlib.Path(f"snapshots/data-{stamp}.tar.gz").write_bytes(raw)
+          pathlib.Path("data-latest.tar.gz").write_bytes(raw)
+          print(f"saved {d['size_bytes']} bytes ({d.get('file_count', '?')} files) -> snapshots/data-{stamp}.tar.gz")
+          PY
+          rm snapshot.json
+
+      - name: Prune old snapshots (keep latest 30)
+        run: |
+          cd backup-work/snapshots
+          ls -1t data-*.tar.gz 2>/dev/null | tail -n +31 | xargs -r rm -f
+
+      - name: Commit and push
+        run: |
+          cd backup-work
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -q -m "backup: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push -q origin data-backup
+          fi

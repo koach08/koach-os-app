@@ -141,6 +141,13 @@ JSON のみ。Markdown 禁止。"""
 
 
 _HOKUDAI_DOMAINS = ("hokudai.ac.jp", "imc.hokudai.ac.jp")
+_AUTO_SENDER_PATTERNS = (
+    "no-reply", "noreply", "no_reply", "do-not-reply", "donotreply", "do_not_reply",
+    "notifications@", "notification@", "news@", "newsletter", "mailmag",
+    "mailer-daemon", "postmaster@", "alerts@", "info@",
+)
+# 大学・研究機関ドメイン (.ac.jp / .edu / .ac.<cc> / 国立研究機関)
+_ACADEMIC_DOMAIN_PATTERNS = (".ac.jp", ".edu", ".ac.kr", ".ac.uk", ".ac.cn", ".edu.tw", "riken.jp", "nii.ac.jp", "jaxa.jp")
 
 
 def _is_hokudai(from_field: str) -> bool:
@@ -149,6 +156,22 @@ def _is_hokudai(from_field: str) -> bool:
         return False
     f = from_field.lower()
     return any(d in f for d in _HOKUDAI_DOMAINS)
+
+
+def _is_auto_sender(from_field: str) -> bool:
+    """自動配信っぽい From かを判定 (no-reply 等)"""
+    if not from_field:
+        return False
+    f = from_field.lower()
+    return any(p in f for p in _AUTO_SENDER_PATTERNS)
+
+
+def _is_academic_sender(from_field: str) -> bool:
+    """大学・研究機関ドメインからか (北大含む)"""
+    if not from_field:
+        return False
+    f = from_field.lower()
+    return any(d in f for d in _ACADEMIC_DOMAIN_PATTERNS)
 
 
 class ScanReq(BaseModel):
@@ -260,12 +283,24 @@ def scan(req: ScanReq):
         requires_action = bool(c.get("requires_action"))
         urgency = c.get("urgency", "medium")
 
+        from_field = e.get("from", "")
+        is_hokudai = _is_hokudai(from_field)
+        is_academic = _is_academic_sender(from_field)
+        is_auto = _is_auto_sender(from_field)
+
         # 北大ドメインは強制で要対応 (ただし AI が promo/system と判定したものは尊重 → 学生向け全体配信などはノイズ)
-        if _is_hokudai(e.get("from", "")) and category not in ("promo", "system"):
+        if is_hokudai and category not in ("promo", "system"):
             category = "university"
             requires_action = True
             if urgency == "low":
                 urgency = "medium"
+
+        # 他大学・研究機関 (.ac.jp / .edu 等) の **人間** からのメールは強制保存 + 要対応
+        # (AI が research+requires_action=false にしたケースを救済 — 日程相談・会議調整など漏らさない)
+        if is_academic and not is_hokudai and not is_auto and category not in ("promo", "system"):
+            requires_action = True
+            if category == "other":
+                category = "research"
 
         # promo / system は捨てる (自動配信・学生向け広報なので)
         if category in ("promo", "system"):

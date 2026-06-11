@@ -97,6 +97,8 @@ from routers import secretary
 app.include_router(secretary.router, prefix="/api")
 from routers import cron
 app.include_router(cron.router, prefix="/api")
+from routers import external_chats
+app.include_router(external_chats.router, prefix="/api")
 
 
 @app.get("/api/health")

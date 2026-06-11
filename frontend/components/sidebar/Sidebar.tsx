@@ -26,6 +26,7 @@ const NAV_ITEMS = [
   { href: "/training", label: "Training", icon: "💪" },
   { href: "/agent", label: "Agent", icon: "🤖" },
   { href: "/email-watch", label: "対応待ちメール", icon: "📧" },
+  { href: "/external-chats", label: "外部 AI 履歴", icon: "🗂" },
   { href: "/deep-work", label: "Deep Work 提案", icon: "🪄" },
   { href: "/launcher", label: "AI ランチャー", icon: "🚀" },
   { href: "/personas", label: "多視点で考える", icon: "🎭" },

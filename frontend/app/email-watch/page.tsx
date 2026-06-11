@@ -28,6 +28,7 @@ const URGENCY_COLOR: Record<string, string> = {
 const CAT_EMOJI: Record<string, string> = {
   university: "🎓",
   research: "🔬",
+  prospective_student: "🎯",
   personal: "👤",
   promo: "📣",
   system: "🔧",
@@ -43,6 +44,13 @@ export default function EmailWatchPage() {
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [recentlyDone, setRecentlyDone] = useState<Followup | null>(null);
   const [undoCountdown, setUndoCountdown] = useState<number>(0);
+  // 返信案 modal
+  const [replyFor, setReplyFor] = useState<Followup | null>(null);
+  const [replyHint, setReplyHint] = useState<string>("");
+  const [replyEngine, setReplyEngine] = useState<string>("claude");
+  const [replyText, setReplyText] = useState<string>("");
+  const [replyLoading, setReplyLoading] = useState<boolean>(false);
+  const [replyCopied, setReplyCopied] = useState<boolean>(false);
 
   const load = () => {
     setLoading(true);
@@ -113,6 +121,52 @@ export default function EmailWatchPage() {
     const t = setTimeout(() => setUndoCountdown((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [recentlyDone, undoCountdown]);
+
+  const openReply = (it: Followup) => {
+    setReplyFor(it);
+    setReplyHint("");
+    setReplyText("");
+    setReplyCopied(false);
+  };
+
+  const closeReply = () => {
+    setReplyFor(null);
+    setReplyHint("");
+    setReplyText("");
+    setReplyLoading(false);
+    setReplyCopied(false);
+  };
+
+  const generateReply = async () => {
+    if (!replyFor) return;
+    setReplyLoading(true);
+    setReplyText("");
+    try {
+      const r = await fetch(`/api/email-watch/${replyFor.id}/draft-reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hint: replyHint, engine: replyEngine }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      setReplyText(d.reply_text || "");
+    } catch (e) {
+      setReplyText(`生成失敗: ${(e as Error).message}`);
+    } finally {
+      setReplyLoading(false);
+    }
+  };
+
+  const copyReply = async () => {
+    if (!replyText) return;
+    try {
+      await navigator.clipboard.writeText(replyText);
+      setReplyCopied(true);
+      setTimeout(() => setReplyCopied(false), 2000);
+    } catch {
+      // noop
+    }
+  };
 
   const snooze = async (id: string, days: number) => {
     await fetch(`/api/email-watch/${id}/snooze`, {
@@ -245,11 +299,19 @@ export default function EmailWatchPage() {
                       😴 +{d}d
                     </button>
                   ))}
+                  <button
+                    onClick={() => openReply(it)}
+                    className="text-xs px-3 py-1 rounded-full ml-auto"
+                    style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                    title="AI に返信案を相談"
+                  >
+                    ✉️ 返信を相談
+                  </button>
                   <a
                     href={`https://mail.google.com/mail/u/1/#inbox/${it.thread_id || it.id}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-xs px-3 py-1 rounded-full ml-auto"
+                    className="text-xs px-3 py-1 rounded-full"
                     style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
                   >
                     Gmail で開く
@@ -260,6 +322,98 @@ export default function EmailWatchPage() {
           })}
         </div>
       </div>
+
+      {replyFor && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.5)" }}
+          onClick={closeReply}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs uppercase tracking-widest mb-1" style={{ color: "var(--color-text-muted)" }}>
+                  ✉️ 返信案 AI 相談
+                </p>
+                <h2 className="text-base font-semibold truncate">{replyFor.subject}</h2>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                  From: {replyFor.from}
+                </p>
+              </div>
+              <button onClick={closeReply} className="text-xl px-2" style={{ color: "var(--color-text-muted)" }}>
+                ×
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <label className="text-xs block mb-1" style={{ color: "var(--color-text-muted)" }}>
+                返信の方針・ヒント (任意)
+              </label>
+              <textarea
+                value={replyHint}
+                onChange={(e) => setReplyHint(e.target.value)}
+                placeholder="例: 候補日を 6/15 (月) 14時 と 6/17 (水) 10時 で提示してほしい"
+                className="w-full rounded-lg p-2 text-sm"
+                style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)", minHeight: 60 }}
+              />
+            </div>
+
+            <div className="mb-4 flex items-center gap-2">
+              <label className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                エンジン:
+              </label>
+              {["claude", "gpt", "gemini"].map((en) => (
+                <button
+                  key={en}
+                  onClick={() => setReplyEngine(en)}
+                  className="text-xs px-2.5 py-1 rounded-full"
+                  style={{
+                    background: replyEngine === en ? "#f59e0b" : "var(--color-surface-hover)",
+                    color: replyEngine === en ? "white" : "var(--color-text-muted)",
+                  }}
+                >
+                  {en}
+                </button>
+              ))}
+              <button
+                onClick={generateReply}
+                disabled={replyLoading}
+                className="ml-auto text-xs px-4 py-1.5 rounded-full disabled:opacity-50"
+                style={{ background: "#f59e0b", color: "white" }}
+              >
+                {replyLoading ? "生成中..." : "返信案を生成"}
+              </button>
+            </div>
+
+            {replyText && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    返信案 ({replyText.length} 字)
+                  </span>
+                  <button
+                    onClick={copyReply}
+                    className="text-xs px-3 py-1 rounded-full"
+                    style={{ background: replyCopied ? "#10b981" : "var(--color-surface-hover)", color: replyCopied ? "white" : "var(--color-text-muted)" }}
+                  >
+                    {replyCopied ? "✓ コピー済み" : "コピー"}
+                  </button>
+                </div>
+                <pre
+                  className="text-sm whitespace-pre-wrap p-3 rounded-lg"
+                  style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)", fontFamily: "inherit", lineHeight: 1.7 }}
+                >
+                  {replyText}
+                </pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {recentlyDone && (
         <div

@@ -116,7 +116,7 @@ CLASSIFY_PROMPT = """あなたは志柿浩一郎 (北海道大学 准教授・ks
 [
   {
     "id": "(渡された ID をそのまま)",
-    "category": "university | research | personal | promo | system | other",
+    "category": "university | research | prospective_student | personal | promo | system | other",
     "requires_action": true | false,
     "urgency": "high | medium | low",
     "deadline_date": "YYYY-MM-DD or null (本文に締切が明示されていれば)",
@@ -128,6 +128,7 @@ CLASSIFY_PROMPT = """あなたは志柿浩一郎 (北海道大学 准教授・ks
 判定ルール:
 - **最優先**: From が hokudai.ac.jp / imc.hokudai.ac.jp ドメイン (北大全体) で **教員個人にアクションが要るもの** → category=university, requires_action=true 固定、urgency は medium 以上 (締切明示なら high)
 - ただし北大ドメインでも、大学院入試 / ネット出願 / 募集要項 / 全学広報 / 学生向け案内 / 受験生向け配信のような「**多数配信・教員個人にアクション不要**」のものは category=promo, requires_action=false にしてよい (志柿は教員、出願ではなく出題側)
+- **prospective_student**: 大学院 (修士・博士) 進学希望者 / 研究室訪問希望 / 指導教員相談 / Ph.D. inquiry / graduate admission の個人的問い合わせ → 必ず requires_action=true, urgency は medium 以上。 件名/本文に「進学希望」「研究室訪問」「指導教員」「修士課程」「博士課程」「博士後期」「大学院」「Ph.D.」「PhD」「graduate program」「research interest」「admission inquiry」を含み、かつ送信者が学生 (elms.hokudai / 他大学学生メアド / Gmail 個人) のもの
 - university: 学部・授業・委員会・学生関係・大学事務・北大関連 → 基本 requires_action=true
 - research: 他大学 (.ac.jp / .edu) の教員・共著者・査読・学会・科研費 → 業務連絡 (日程相談 / 会議調整 / 共同研究 / 論文相談 / 学生指導) なら requires_action=true。純粋な情報共有のみ false
 - promo: ニュースレター・広告・配信通知 (mailmag / no-reply / news@) → requires_action=false
@@ -172,6 +173,19 @@ def _is_academic_sender(from_field: str) -> bool:
         return False
     f = from_field.lower()
     return any(d in f for d in _ACADEMIC_DOMAIN_PATTERNS)
+
+
+_PROSPECTIVE_KEYWORDS = (
+    "進学希望", "研究室訪問", "指導教員", "修士課程", "博士課程", "博士後期",
+    "大学院進学", "院進学", "phd", "ph.d", "graduate program", "research interest",
+    "admission inquiry", "research student", "院試", "受験希望", "大学院入学",
+)
+
+
+def _is_prospective_keyword(subject: str, snippet: str) -> bool:
+    """件名・snippet に進学希望者キーワードが含まれるか"""
+    text = ((subject or "") + " " + (snippet or "")).lower()
+    return any(k in text for k in _PROSPECTIVE_KEYWORDS)
 
 
 class ScanReq(BaseModel):
@@ -287,9 +301,17 @@ def scan(req: ScanReq):
         is_hokudai = _is_hokudai(from_field)
         is_academic = _is_academic_sender(from_field)
         is_auto = _is_auto_sender(from_field)
+        is_prospective = _is_prospective_keyword(e.get("subject", ""), e.get("snippet", ""))
+
+        # 進学希望者キーワード検出 → 強制 prospective_student (auto sender は除く)
+        if is_prospective and not is_auto and category not in ("promo", "system"):
+            category = "prospective_student"
+            requires_action = True
+            if urgency == "low":
+                urgency = "medium"
 
         # 北大ドメインは強制で要対応 (ただし AI が promo/system と判定したものは尊重 → 学生向け全体配信などはノイズ)
-        if is_hokudai and category not in ("promo", "system"):
+        if is_hokudai and category not in ("promo", "system", "prospective_student"):
             category = "university"
             requires_action = True
             if urgency == "low":
@@ -297,7 +319,7 @@ def scan(req: ScanReq):
 
         # 他大学・研究機関 (.ac.jp / .edu 等) の **人間** からのメールは強制保存 + 要対応
         # (AI が research+requires_action=false にしたケースを救済 — 日程相談・会議調整など漏らさない)
-        if is_academic and not is_hokudai and not is_auto and category not in ("promo", "system"):
+        if is_academic and not is_hokudai and not is_auto and category not in ("promo", "system", "prospective_student"):
             requires_action = True
             if category == "other":
                 category = "research"
@@ -444,3 +466,120 @@ def snooze(item_id: str, body: SnoozeReq):
         raise HTTPException(400, "days か date か clear が必要")
     _write(state)
     return items[item_id]
+
+
+# ---------------------------------------------------------------------------
+# 返信案 AI 相談 — POST /email-watch/{item_id}/draft-reply
+# ---------------------------------------------------------------------------
+
+DRAFT_REPLY_SYSTEM = """あなたは志柿浩一郎 (北海道大学 メディア・観光学院 准教授) の代理メール起案担当。
+
+返信案を作る時のルール:
+- 件名は元の Subject に Re: を付ける (既に Re: なら維持)
+- 宛名は元の From の名前を「○○様 (or 先生)」で
+- 敬語は「です・ます」調。 ただし冗長な敬語連打は避け、 1 文 60 字以内基準
+- 「いつも大変お世話になっております」等の定型挨拶は学外の人にのみ。 学内事務には不要
+- 学外の研究者宛 → 1 文目で謝意、 2 文目で本題、 締切や日程相談なら具体日 / 候補日まで踏み込む
+- 学生宛 → 簡潔に、 余計な感情表現なし、 必要なら添付物・期限を明示
+- 不明な点 (具体日時・添付の有無等) は本文中に [(志柿が記入: ...)] のプレースホルダで残す
+- 抽象名詞「〜性」、 感情を煽る表現、 過度な絵文字は使わない
+- 末尾の署名:
+    志柿浩一郎
+    北海道大学 大学院メディア・コミュニケーション研究院
+
+ユーザーからヒントが渡されていれば、 その内容を最優先で反映する。
+
+出力フォーマット:
+件名: <件名>
+
+<本文>
+
+JSON や Markdown 装飾は不要。本文プレーンテキスト。"""
+
+
+class DraftReplyReq(BaseModel):
+    hint: str | None = None
+    engine: str = "claude"
+
+
+@router.post("/email-watch/{item_id}/draft-reply")
+def draft_reply(item_id: str, body: DraftReplyReq):
+    state = _load()
+    items = state.get("items", {}) or {}
+    item = items.get(item_id)
+    if not item:
+        raise HTTPException(404, "not found")
+
+    # フル本文を Gmail から取得 (snippet だけだと足りない事が多い)
+    full_body = ""
+    try:
+        from gcal import _get_gmail_service
+        service = _get_gmail_service(item.get("slot", 2))
+        msg = service.users().messages().get(userId="me", id=item_id, format="full").execute()
+        full_body = _extract_plain_body(msg)
+    except Exception:
+        full_body = item.get("snippet", "")
+
+    context = (
+        f"=== 元メール ===\n"
+        f"From: {item.get('from', '')}\n"
+        f"件名: {item.get('subject', '')}\n"
+        f"受信日: {item.get('received_at', '')}\n"
+        f"要約: {item.get('summary', '')}\n"
+        f"アクション目安: {item.get('action_hint', '')}\n"
+        f"本文:\n{full_body[:4000]}\n"
+    )
+    if body.hint:
+        context += f"\n=== ユーザーヒント ===\n{body.hint}\n"
+
+    engine = body.engine if body.engine in DEFAULT_MODELS else "claude"
+    model = DEFAULT_MODELS[engine]
+    try:
+        reply_text = call_ai(
+            messages=[{"role": "user", "content": context + "\n返信案をプレーンテキストで起案してください。"}],
+            system=DRAFT_REPLY_SYSTEM,
+            engine=engine,
+            model=model,
+            max_tokens=2000,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"AI draft failed: {e}")
+
+    return {
+        "ok": True,
+        "engine": engine,
+        "model": model,
+        "reply_text": reply_text.strip(),
+        "chars": len(reply_text),
+    }
+
+
+def _extract_plain_body(msg: dict) -> str:
+    """Gmail API の messages.get(format=full) から text/plain 本文を抽出"""
+    import base64
+
+    def walk(part: dict) -> str:
+        mime = part.get("mimeType", "")
+        body = part.get("body", {}) or {}
+        data = body.get("data")
+        if mime == "text/plain" and data:
+            try:
+                return base64.urlsafe_b64decode(data.encode("ascii") + b"==").decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+        for sub in part.get("parts", []) or []:
+            t = walk(sub)
+            if t:
+                return t
+        # text/html しかない場合の fallback
+        if mime == "text/html" and data:
+            try:
+                html = base64.urlsafe_b64decode(data.encode("ascii") + b"==").decode("utf-8", errors="replace")
+                # 簡易タグ除去
+                return re.sub(r"<[^>]+>", " ", html)
+            except Exception:
+                return ""
+        return ""
+
+    payload = msg.get("payload") or {}
+    return walk(payload).strip()

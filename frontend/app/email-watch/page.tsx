@@ -287,7 +287,7 @@ export default function EmailWatchPage() {
                     className="text-xs px-3 py-1 rounded-full"
                     style={{ background: "rgba(16, 185, 129, 0.15)", color: "#10b981" }}
                   >
-                    ✓ 対応済み
+                    対応済みにする
                   </button>
                   {[1, 3, 7].map((d) => (
                     <button

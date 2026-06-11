@@ -41,6 +41,8 @@ export default function EmailWatchPage() {
   const [scanResult, setScanResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [overdueOnly, setOverdueOnly] = useState(false);
+  const [recentlyDone, setRecentlyDone] = useState<Followup | null>(null);
+  const [undoCountdown, setUndoCountdown] = useState<number>(0);
 
   const load = () => {
     setLoading(true);
@@ -79,9 +81,38 @@ export default function EmailWatchPage() {
   };
 
   const markDone = async (id: string) => {
+    const target = items.find((x) => x.id === id);
     await fetch(`/api/email-watch/${id}/done`, { method: "POST" });
     setItems((prev) => prev.filter((x) => x.id !== id));
+    if (target) {
+      setRecentlyDone(target);
+      setUndoCountdown(5);
+    }
   };
+
+  const undoDone = async () => {
+    if (!recentlyDone) return;
+    const it = recentlyDone;
+    setRecentlyDone(null);
+    setUndoCountdown(0);
+    try {
+      await fetch(`/api/email-watch/${it.id}/reopen`, { method: "POST" });
+      setItems((prev) => [{ ...it, done_at: null }, ...prev]);
+    } catch {
+      // 戻せなかった場合は再 load で実態を取得
+      load();
+    }
+  };
+
+  useEffect(() => {
+    if (!recentlyDone) return;
+    if (undoCountdown <= 0) {
+      setRecentlyDone(null);
+      return;
+    }
+    const t = setTimeout(() => setUndoCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [recentlyDone, undoCountdown]);
 
   const snooze = async (id: string, days: number) => {
     await fetch(`/api/email-watch/${id}/snooze`, {
@@ -229,6 +260,27 @@ export default function EmailWatchPage() {
           })}
         </div>
       </div>
+
+      {recentlyDone && (
+        <div
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-full shadow-lg"
+          style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+        >
+          <span className="text-sm">
+            ✓ 対応済みにしました
+            <span className="ml-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+              {recentlyDone.subject.slice(0, 30)}
+            </span>
+          </span>
+          <button
+            onClick={undoDone}
+            className="text-xs px-3 py-1 rounded-full"
+            style={{ background: "#f59e0b", color: "white" }}
+          >
+            ↩ 元に戻す ({undoCountdown})
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -29,6 +29,8 @@ const NAV_ITEMS = [
   { href: "/external-chats", label: "外部 AI 履歴", icon: "🗂" },
   { href: "/deep-work", label: "Deep Work 提案", icon: "🪄" },
   { href: "/launcher", label: "AI ランチャー", icon: "🚀" },
+  { href: "/dispatch-auto", label: "AI 自動ディスパッチ", icon: "🎯" },
+  { href: "/self-improve", label: "自己改善ループ", icon: "🌱" },
   { href: "/personas", label: "多視点で考える", icon: "🎭" },
   { href: "/extract", label: "動画→構造化", icon: "🎬" },
   { href: "/dispatcher", label: "AI 外注 (指示書)", icon: "📨" },

@@ -1,0 +1,25 @@
+name: Auto Reschedule (翌日プレビュー)
+
+on:
+  schedule:
+    # 14:00 UTC = 23:00 JST
+    - cron: "0 14 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger backend
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$BACKEND_URL" ] || [ -z "$CRON_TOKEN" ]; then
+            echo "::error::BACKEND_URL or CRON_TOKEN secret is missing"
+            exit 1
+          fi
+          curl -fsSL -X POST "$BACKEND_URL/api/cron/auto-reschedule" \
+            -H "X-Cron-Token: $CRON_TOKEN" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP %{http_code}\n"

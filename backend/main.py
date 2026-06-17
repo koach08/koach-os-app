@@ -103,6 +103,8 @@ from routers import dispatch_auto
 app.include_router(dispatch_auto.router, prefix="/api")
 from routers import self_improve
 app.include_router(self_improve.router, prefix="/api")
+from routers import research
+app.include_router(research.router, prefix="/api")
 
 
 @app.get("/api/health")

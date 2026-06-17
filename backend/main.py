@@ -105,6 +105,8 @@ from routers import self_improve
 app.include_router(self_improve.router, prefix="/api")
 from routers import research
 app.include_router(research.router, prefix="/api")
+from routers import work_log
+app.include_router(work_log.router, prefix="/api")
 
 
 @app.get("/api/health")

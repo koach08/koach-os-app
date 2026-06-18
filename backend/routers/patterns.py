@@ -114,6 +114,15 @@ def _gather_signals(days: int = 30) -> dict:
     except Exception:
         pass
 
+    # work_log (実績台帳): 実際にやり遂げた作業 + 使った AI
+    work_log = []
+    try:
+        from routers.work_log import _materialize as _wl_materialize
+        work_log = [w for w in _wl_materialize().values() if w.get("date", "") >= cutoff_date]
+        work_log.sort(key=lambda x: x.get("date", ""))
+    except Exception:
+        work_log = []
+
     return {
         "completions": completions,
         "focus_sessions": focus_sessions,
@@ -123,6 +132,7 @@ def _gather_signals(days: int = 30) -> dict:
         "memos": memos,
         "cal_events": cal_events,
         "backlog_open": backlog_open,
+        "work_log": work_log,
         "days": days,
     }
 
@@ -134,6 +144,26 @@ def _signals_to_text(s: dict) -> str:
     parts.append(f"\n### 完了ログ ({len(s['completions'])}件) — 直近20")
     for c in s["completions"][-20:]:
         parts.append(f"- {c.get('date','')[5:]} [{c.get('category','')}] {c.get('title','')}")
+
+    work_log = s.get("work_log", [])
+    parts.append(f"\n### 実績台帳 work_log ({len(work_log)}件) — 直近20")
+    for w in work_log[-20:]:
+        eng = f" [AI:{w.get('engine')}]" if w.get("engine") else ""
+        mins = f" {w.get('minutes')}分" if w.get("minutes") else ""
+        parts.append(f"- {w.get('date','')[5:]} [{w.get('category','')}] {w.get('title','')}{eng}{mins}")
+    eng_cat: dict[str, dict[str, int]] = {}
+    for w in work_log:
+        e = w.get("engine")
+        if not e:
+            continue
+        cat = w.get("category") or "(未分類)"
+        d = eng_cat.setdefault(cat, {})
+        d[e] = d.get(e, 0) + 1
+    if eng_cat:
+        parts.append("- 作業カテゴリ別の AI 使用: " + "; ".join(
+            f"{cat}=" + ",".join(f"{e}:{n}" for e, n in sorted(ec.items(), key=lambda x: -x[1]))
+            for cat, ec in eng_cat.items()
+        ))
 
     parts.append(f"\n### 集中セッション ({len(s['focus_sessions'])}件)")
     by_cat = {}
@@ -193,6 +223,7 @@ SYSTEM_PROMPT = """あなたは志柿のデータ分析担当。過去 30 日の
 - 数字付きの具体的観察を 5〜8 件、Markdown 箇条書きで
 - 各観察は「事実 → 含意」の 2 行: 1 行目は数字を伴う事実、2 行目は「だからこうかもしれない」「これは…の兆候」など
 - バイアス・偏り・盲点を率直に指摘 (家族時間が削られている、特定カテゴリだけ未完率高い等)
+- work_log がある場合、使った AI の偏り (慣れで同じ AI に投げて手戻りが多い作業がないか等) も観察対象に含める
 - 強み・うまく行っているパターンも 1〜2 件
 - 一般論・精神論 NG ("頑張ってる" のような感想 NG)
 - 抽象名詞「〜性」「重要性」「必要性」NG
@@ -247,6 +278,7 @@ def _generate(engine: str = "claude") -> dict:
             "memos": len(signals["memos"]),
             "cal_events": len(signals["cal_events"]),
             "backlog_open": len(signals["backlog_open"]),
+            "work_log": len(signals["work_log"]),
         },
         "report": out,
     }

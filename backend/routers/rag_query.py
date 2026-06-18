@@ -150,6 +150,33 @@ def _gather_docs() -> list[dict]:
     except Exception:
         pass
 
+    # work_log (実績台帳): やり遂げた作業を「自分が過去にやった事」として検索可能に
+    try:
+        from routers.work_log import _materialize as _wl_materialize
+        for w in _wl_materialize().values():
+            bits = [w.get("title", "")]
+            meta_line = " / ".join(
+                x for x in [w.get("project", ""), w.get("category", ""),
+                            (f"AI: {w['engine']}" if w.get("engine") else "")]
+                if x
+            )
+            if meta_line:
+                bits.append(meta_line)
+            if w.get("outcome"):
+                bits.append(w["outcome"])
+            text = "\n".join(b for b in bits if b).strip()
+            if not text:
+                continue
+            docs.append({
+                "id": f"work:{w.get('id','')}",
+                "kind": "work",
+                "text": text[:2000],
+                "title": w.get("title", "")[:120],
+                "timestamp": w.get("date", "") or w.get("created_at", ""),
+            })
+    except Exception:
+        pass
+
     return docs
 
 
@@ -238,7 +265,7 @@ def rag_query(req: RagQuery):
     )
 
     system_prompt = """あなたは志柿のパーソナル知識ベース AI。
-過去の memo / decision / failure / private chat / backlog から引用付きで質問に答える。
+過去の memo / decision / failure / private chat / backlog / work (実績台帳) から引用付きで質問に答える。
 
 ルール:
 - 引用元は [1], [2] の形式で本文中に挟む。citation_text にない情報を勝手に補わない

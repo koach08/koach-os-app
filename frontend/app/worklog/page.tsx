@@ -81,6 +81,16 @@ export default function WorkLogPage() {
   const [engine, setEngine] = useState("");
   const [outcome, setOutcome] = useState("");
 
+  // AI engine suggestion (work_log の実績ベース)
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<{
+    engine: string;
+    reason: string;
+    history_used: boolean;
+    close_call: boolean;
+    history_thin: boolean;
+  } | null>(null);
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -137,6 +147,34 @@ export default function WorkLogPage() {
       loadMeta();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleSuggest = async () => {
+    if (!title.trim()) return;
+    setSuggesting(true);
+    setSuggestion(null);
+    try {
+      const r = await fetch("/api/dispatch/suggest-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: title, category: category || null }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setSuggestion({
+          engine: d.engine,
+          reason: d.reason,
+          history_used: d.history_used,
+          close_call: d.close_call,
+          history_thin: d.history_thin,
+        });
+        if (ENGINE_OPTIONS.includes(d.engine)) setEngine(d.engine);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSuggesting(false);
     }
   };
 
@@ -306,7 +344,28 @@ export default function WorkLogPage() {
                   </option>
                 ))}
               </select>
+              <button
+                onClick={handleSuggest}
+                disabled={!title.trim() || suggesting}
+                className="px-3 py-2 rounded-lg text-sm disabled:opacity-40 transition-all"
+                style={{ background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.4)" }}
+                title="やったこと(と任意でカテゴリ)から、過去の実績を根拠に最適な AI を提案"
+              >
+                {suggesting ? "..." : "🤖 AI提案"}
+              </button>
             </div>
+            {suggestion && (
+              <div className="text-xs px-3 py-2 rounded-lg" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)" }}>
+                <span style={{ color: "#86efac" }}>おすすめ: {suggestion.engine}</span>
+                {suggestion.reason && <span style={{ color: "var(--color-text-muted)" }}> — {suggestion.reason}</span>}
+                {suggestion.history_thin && (
+                  <span style={{ color: "var(--color-text-muted)" }}> ⚠実績が薄いので一般論ベース</span>
+                )}
+                {suggestion.close_call && (
+                  <span style={{ color: "var(--color-text-muted)" }}> (僅差)</span>
+                )}
+              </div>
+            )}
             <textarea
               value={outcome}
               onChange={(e) => setOutcome(e.target.value)}

@@ -62,6 +62,34 @@ EXEC_SYSTEM = """あなたは志柿浩一郎 (北海道大学 准教授・個人
 """
 
 
+SUGGEST_SYSTEM = """あなたは志柿の AI エンジン選定アドバイザー。
+タスク内容と、本人が過去に「どの種類の作業でどの AI を使ったか」の実績 (work_log) を見て、最適なエンジンを1つ薦める。
+
+利用可能エンジン (一般的な強み):
+- claude     : 長文推論 / コード / 学術文章 / 戦略思考
+- gpt        : 汎用対話 / 構造化 (JSON) / マルチモーダル
+- gemini     : 長 context / PDF・画像・動画解析
+- grok       : リアルタイム / X 動向 / 速報
+- venice     : 検閲なしの個人相談
+- perplexity : 引用付き Web 検索 / 学術調査
+- groq       : 超高速・低コスト・短文
+
+判断ルール (忖度しない):
+- 本人の実績 (履歴) があれば最優先で根拠にする。数字を引いて言う (例: この作業は過去 perplexity 3 回)
+- 履歴が薄い / 無い時は「履歴が薄いので一般論ベース」と正直に断る
+- 一般論と実績がぶつかる時、僅差なら「僅差」と言って断定しない
+- おだてない。タスクに最適な選択だけ返す
+
+必ず JSON 1 オブジェクトのみ返す:
+{"engine":"claude|gpt|gemini|grok|venice|perplexity|groq", "reason":"40字以内の根拠 (履歴があれば数字を引く)", "history_used": true|false, "close_call": true|false}
+Markdown のコードフェンス禁止。"""
+
+
+class SuggestReq(BaseModel):
+    task: str
+    category: str | None = None
+
+
 class AutoDispatchReq(BaseModel):
     goal: str
     context: str | None = None
@@ -95,6 +123,76 @@ def _route(goal: str, context: str | None) -> tuple[str, str]:
         engine = "claude"
         reason = f"フォールバック ({d.get('engine')} は未登録)"
     return (engine, reason[:80])
+
+
+@router.post("/dispatch/suggest-engine")
+def suggest_engine(req: SuggestReq):
+    """work_log の実績を根拠に「この作業はこの AI が向く」を提案。
+    実績が薄ければ正直に一般論ベースと言い、僅差なら断定しない (忖度しない)。"""
+    if not req.task.strip():
+        raise HTTPException(400, "task required")
+
+    hist_lines: list[str] = []
+    history_thin = True
+    try:
+        from routers.work_log import work_log_stats
+        stats = work_log_stats(90)
+        ebc = stats.get("engine_by_category", {})
+        by_eng = stats.get("by_engine", {})
+        if stats.get("total_entries", 0) >= 3:
+            history_thin = False
+        if req.category and req.category in ebc:
+            pairs = sorted(ebc[req.category].items(), key=lambda x: -x[1])
+            hist_lines.append(
+                f"カテゴリ「{req.category}」での AI 使用: " + ", ".join(f"{e}:{n}" for e, n in pairs)
+            )
+        if by_eng:
+            pairs = sorted(by_eng.items(), key=lambda x: -x[1])
+            hist_lines.append("全体の AI 使用: " + ", ".join(f"{e}:{n}" for e, n in pairs))
+        if ebc:
+            hist_lines.append("カテゴリ別: " + "; ".join(
+                f"{c}=" + ",".join(f"{e}:{n}" for e, n in sorted(m.items(), key=lambda x: -x[1]))
+                for c, m in ebc.items()
+            ))
+    except Exception:
+        pass
+
+    hist_text = "\n".join(hist_lines) if hist_lines else "(実績データなし)"
+    user_msg = (
+        f"タスク: {req.task}\nカテゴリ: {req.category or '(未指定)'}\n\n"
+        f"## 本人の過去の AI 使用実績 (直近90日)\n{hist_text}"
+    )
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": user_msg}],
+            system=SUGGEST_SYSTEM,
+            engine="claude",
+            model="claude-haiku-4-5",
+            max_tokens=200,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"suggest failed: {e}")
+
+    parsed: dict = {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+        except Exception:
+            parsed = {}
+    engine = parsed.get("engine", "claude")
+    if engine not in DEFAULT_MODELS:
+        engine = "claude"
+    return {
+        "ok": True,
+        "engine": engine,
+        "model": DEFAULT_MODELS[engine],
+        "reason": (parsed.get("reason", "") or "")[:120],
+        "history_used": bool(parsed.get("history_used", False)),
+        "close_call": bool(parsed.get("close_call", False)),
+        "history_thin": history_thin,
+        "history_summary": hist_lines,
+    }
 
 
 @router.post("/dispatch/auto/preview")

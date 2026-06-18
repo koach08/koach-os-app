@@ -91,6 +91,10 @@ export default function WorkLogPage() {
     history_thin: boolean;
   } | null>(null);
 
+  // 入力モード: quick=ざっくり1枚 / detail=構造化フォーム
+  const [mode, setMode] = useState<"quick" | "detail">("quick");
+  const [quickText, setQuickText] = useState("");
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -143,6 +147,26 @@ export default function WorkLogPage() {
       setTitle("");
       setOutcome("");
       setMinutes("");
+      load();
+      loadMeta();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleQuickAdd = async () => {
+    const text = quickText.trim();
+    if (!text) return;
+    const lines = text.split("\n");
+    const firstLine = lines[0].slice(0, 120);
+    const rest = lines.slice(1).join("\n").trim();
+    try {
+      await fetch("/api/work-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: firstLine, outcome: rest, date }),
+      });
+      setQuickText("");
       load();
       loadMeta();
     } catch (e) {
@@ -277,6 +301,64 @@ export default function WorkLogPage() {
               border: "1px solid rgba(34, 197, 94, 0.35)",
             }}
           >
+            {/* モード切替 */}
+            <div className="flex gap-1 text-xs">
+              <button
+                onClick={() => setMode("quick")}
+                className="px-3 py-1 rounded-full transition-all"
+                style={{
+                  background: mode === "quick" ? "var(--color-text)" : "transparent",
+                  color: mode === "quick" ? "var(--color-background)" : "var(--color-text-muted)",
+                  border: "1px solid var(--color-border)",
+                }}
+              >
+                ✏️ ざっくり
+              </button>
+              <button
+                onClick={() => setMode("detail")}
+                className="px-3 py-1 rounded-full transition-all"
+                style={{
+                  background: mode === "detail" ? "var(--color-text)" : "transparent",
+                  color: mode === "detail" ? "var(--color-background)" : "var(--color-text-muted)",
+                  border: "1px solid var(--color-border)",
+                }}
+              >
+                📋 詳しく
+              </button>
+            </div>
+
+            {mode === "quick" && (
+              <div className="space-y-2">
+                <textarea
+                  value={quickText}
+                  onChange={(e) => setQuickText(e.target.value)}
+                  placeholder="今日やったこと、ざっくり書く。改行OK。1行目が見出しになります（プロジェクトや使った AI は後から「詳しく」で足してもOK）"
+                  rows={4}
+                  className="w-full px-3 py-2 rounded-lg text-sm resize-none"
+                  style={inputStyle}
+                />
+                <div className="flex items-center justify-between">
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className="px-3 py-1.5 rounded-lg text-sm"
+                    style={inputStyle}
+                  />
+                  <button
+                    onClick={handleQuickAdd}
+                    disabled={!quickText.trim()}
+                    className="px-5 py-1.5 rounded-full text-sm font-medium disabled:opacity-50 transition-all hover:scale-[1.02]"
+                    style={{ background: "var(--color-text)", color: "var(--color-background)" }}
+                  >
+                    さっと記録
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {mode === "detail" && (
+            <>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -384,6 +466,8 @@ export default function WorkLogPage() {
                 台帳に記録
               </button>
             </div>
+            </>
+            )}
           </div>
 
           {/* Filters */}

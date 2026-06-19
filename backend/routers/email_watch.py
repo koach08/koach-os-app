@@ -16,7 +16,7 @@ import re
 from datetime import date as date_cls, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 from data_manager import DATA_DIR, get_secret, now_jst, timestamp_jst
@@ -234,12 +234,51 @@ def _classify_batch(emails: list[dict], engine: str) -> list[dict]:
         return []
 
 
+_SCAN_STATUS: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "result": None,
+    "error": None,
+}
+
+
+def _run_scan_bg(req: ScanReq):
+    try:
+        result = _do_scan(req)
+        _SCAN_STATUS.update(
+            {"running": False, "finished_at": timestamp_jst(), "result": result, "error": None}
+        )
+    except Exception as e:
+        _SCAN_STATUS.update(
+            {"running": False, "finished_at": timestamp_jst(), "error": str(e)}
+        )
+
+
 @router.post("/email-watch/scan")
-def scan(req: ScanReq):
-    from gcal import is_configured, list_recent_emails
+def scan(req: ScanReq, background_tasks: BackgroundTasks):
+    """重い処理 (100 秒超) なので即時応答 → バックグラウンド実行。
+    結果は GET /email-watch/scan-status でポーリングする。
+    (同期実行だと Vercel の中継が先にタイムアウトし ROUTER_EXTERNAL_TARGET_ERROR になっていた)"""
+    from gcal import is_configured
     if not is_configured():
         raise HTTPException(400, "Google integration not configured")
+    if _SCAN_STATUS.get("running"):
+        return {"ok": True, "started": False, "already_running": True}
+    _SCAN_STATUS.update(
+        {"running": True, "started_at": timestamp_jst(), "finished_at": None, "result": None, "error": None}
+    )
+    background_tasks.add_task(_run_scan_bg, req)
+    return {"ok": True, "started": True}
 
+
+@router.get("/email-watch/scan-status")
+def scan_status():
+    return _SCAN_STATUS
+
+
+def _do_scan(req: ScanReq) -> dict:
+    from gcal import list_recent_emails
     try:
         emails = list_recent_emails(days=req.days, max_results=req.max_emails, slot=req.slot)
     except Exception as e:

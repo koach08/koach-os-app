@@ -78,8 +78,29 @@ export default function EmailWatchPage() {
         body: JSON.stringify({ slot: 2, days: 30, max_emails: 150 }),
       });
       if (!r.ok) throw new Error(await r.text());
-      const d = await r.json();
-      setScanResult(`スキャン: ${d.scanned} 件 / 新規分類: ${d.new_classified} 件 / 追跡追加: ${d.added_followups} 件 / 合計追跡: ${d.total_tracked} 件`);
+      // バックグラウンド実行 → scan-status をポーリング (同期だと中継がタイムアウトするため)
+      setScanResult("スキャン中... (Gmail 取得 + AI 分類。1〜2 分かかります)");
+      const started = Date.now();
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((res) => setTimeout(res, 4000));
+        const sr = await fetch("/api/email-watch/scan-status");
+        const s = await sr.json();
+        if (!s.running) {
+          if (s.error) throw new Error(s.error);
+          const d = s.result;
+          setScanResult(
+            d
+              ? `スキャン: ${d.scanned} 件 / 新規分類: ${d.new_classified} 件 / 追跡追加: ${d.added_followups} 件 / 合計追跡: ${d.total_tracked} 件`
+              : "スキャン完了"
+          );
+          break;
+        }
+        if (Date.now() - started > 300000) {
+          setScanResult("スキャンに時間がかかっています。少し後に再読み込みしてください。");
+          break;
+        }
+      }
       load();
     } catch (e) {
       setError((e as Error).message);

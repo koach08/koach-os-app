@@ -107,6 +107,8 @@ from routers import research
 app.include_router(research.router, prefix="/api")
 from routers import work_log
 app.include_router(work_log.router, prefix="/api")
+from routers import routines
+app.include_router(routines.router, prefix="/api")
 
 
 @app.get("/api/health")

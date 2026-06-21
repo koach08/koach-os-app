@@ -130,6 +130,56 @@ export default function RoutinesPage() {
     }
   };
 
+  const TEMPLATES: Array<{ label: string; body: Record<string, unknown> }> = [
+    { label: "☀ 朝のブリーフ(毎日7時・メール)", body: { name: "朝のブリーフ", kind: "builtin", builtin_ref: "daily-brief", cadence: "daily", at_hour: 7, delivery: "email", engine: "claude" } },
+    { label: "🌙 夜の振り返り(毎日21時)", body: { name: "夜の振り返り", kind: "builtin", builtin_ref: "evening-brief", cadence: "daily", at_hour: 21, delivery: "inapp", engine: "claude" } },
+    { label: "📊 週次レビュー(月9時・メール)", body: { name: "週次レビュー", kind: "builtin", builtin_ref: "weekly-review", cadence: "weekly", weekday: 0, at_hour: 9, delivery: "email", engine: "claude" } },
+    { label: "📧 メールスキャン(毎日8時)", body: { name: "対応待ちメール スキャン", kind: "builtin", builtin_ref: "email-scan", cadence: "daily", at_hour: 8, delivery: "inapp" } },
+    { label: "📈 crypto 週次レビュー(月9時)", body: { name: "crypto 週次レビュー", kind: "ai", task: "crypto-trader の直近ログを要約し、気になる点と改善案を3つ挙げて", cadence: "weekly", weekday: 0, at_hour: 9, engine: "auto", delivery: "inapp" } },
+    { label: "🤝 週次メール棚卸し(Cowork引継ぎ・月)", body: { name: "週次メール棚卸し", kind: "cowork", task: "今週のメールを整理して未対応を一覧化し、返信の下書きまで作る", cadence: "weekly", weekday: 0, at_hour: 9, delivery: "email" } },
+  ];
+
+  const addTemplate = async (body: Record<string, unknown>) => {
+    setBusy("create");
+    setError(null);
+    try {
+      const r = await fetch("/api/routines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openInClaude = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* clipboard 不可でも開く */
+    }
+    try {
+      const r = await fetch("/api/ai-services");
+      const d = await r.json();
+      const svc = (d.services ?? []).find(
+        (s: { name?: string; url?: string }) =>
+          /claude|cowork/i.test(s.name ?? "") || /claude\.(ai|com)/i.test(s.url ?? "")
+      );
+      if (svc?.url) {
+        window.open(svc.url, `koach-ai-${svc.id}`, "popup,width=1100,height=900,scrollbars=yes,resizable=yes");
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    window.open("https://claude.ai/", "_blank");
+  };
+
   const toggle = async (rt: Routine) => {
     await fetch(`/api/routines/${rt.id}`, {
       method: "PATCH",
@@ -295,6 +345,26 @@ export default function RoutinesPage() {
             </div>
           </div>
 
+          {/* Templates */}
+          <div>
+            <div className="text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>
+              テンプレートから追加(ワンクリック):
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.label}
+                  onClick={() => addTemplate(t.body)}
+                  disabled={busy === "create"}
+                  className="px-3 py-1.5 rounded-full text-xs transition-all hover:scale-[1.02] disabled:opacity-40"
+                  style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {error && (
             <div className="rounded-2xl p-3 text-sm" style={{ background: "rgba(239, 68, 68, 0.08)", border: "1px solid var(--color-red)", color: "var(--color-red)" }}>
               {error}
@@ -364,6 +434,16 @@ export default function RoutinesPage() {
                           >
                             {lr.error ? `エラー: ${lr.error}` : lr.result_text || "(結果なし)"}
                           </pre>
+                        )}
+                        {expanded === rt.id && rt.kind === "cowork" && lr.result_text && (
+                          <button
+                            onClick={() => openInClaude(lr.result_text || "")}
+                            className="mt-2 px-3 py-1.5 rounded-full text-xs transition-all hover:scale-[1.02]"
+                            style={{ background: "rgba(139,92,246,0.18)", border: "1px solid rgba(139,92,246,0.5)", color: "#c4b5fd" }}
+                            title="指示書をコピーして Claude を開く(貼り付けて Cowork で実行)"
+                          >
+                            📋 コピーして Claude を開く
+                          </button>
                         )}
                       </div>
                     )}

@@ -13,8 +13,11 @@ interface Props {
 }
 
 const NAV_ITEMS = [
+  { href: "/now", label: "今やる一手", icon: "🎯" },
   { href: "/daily", label: "Daily", icon: "🌅" },
   { href: "/evening", label: "Evening", icon: "🌙" },
+  { href: "/triage", label: "未対応の棚卸し", icon: "🗒" },
+  { href: "/ai-usage", label: "AI利用", icon: "📊" },
   { href: "/coach", label: "コーチ", icon: "🧭" },
   { href: "/projects", label: "プロジェクト", icon: "🗂" },
   { href: "/focus", label: "Focus", icon: "⏱" },

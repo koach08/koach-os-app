@@ -41,6 +41,8 @@ ENGINE_OPTIONS = [
     "grok",
     "perplexity",
     "venice",
+    "fugu",
+    "fugu-ultra",
     "canva",
     "notebooklm",
     "codex",

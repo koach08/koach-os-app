@@ -136,6 +136,7 @@ export default function RoutinesPage() {
     { label: "📊 週次レビュー(月9時・メール)", body: { name: "週次レビュー", kind: "builtin", builtin_ref: "weekly-review", cadence: "weekly", weekday: 0, at_hour: 9, delivery: "email", engine: "claude" } },
     { label: "📧 メールスキャン(毎日8時)", body: { name: "対応待ちメール スキャン", kind: "builtin", builtin_ref: "email-scan", cadence: "daily", at_hour: 8, delivery: "inapp" } },
     { label: "📈 crypto 週次レビュー(月9時)", body: { name: "crypto 週次レビュー", kind: "ai", task: "crypto-trader の直近ログを要約し、気になる点と改善案を3つ挙げて", cadence: "weekly", weekday: 0, at_hour: 9, engine: "auto", delivery: "inapp" } },
+    { label: "📚 文献ウォッチ(fugu-ultra・月)", body: { name: "研究 文献ウォッチ", kind: "ai", task: "自分の研究分野(第二言語習得・AI教育応用)の新着論文と動向を調べ、要点と着目点を5件にまとめて", cadence: "weekly", weekday: 0, at_hour: 8, engine: "fugu-ultra", delivery: "email" } },
     { label: "🤝 週次メール棚卸し(Cowork引継ぎ・月)", body: { name: "週次メール棚卸し", kind: "cowork", task: "今週のメールを整理して未対応を一覧化し、返信の下書きまで作る", cadence: "weekly", weekday: 0, at_hour: 9, delivery: "email" } },
   ];
 

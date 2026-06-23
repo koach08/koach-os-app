@@ -107,6 +107,8 @@ DEFAULT_MODELS = {
     "venice": "venice-uncensored",
     "perplexity": "sonar-pro",
     "groq": "llama-3.3-70b-versatile",
+    "fugu": "fugu",
+    "fugu-ultra": "fugu-ultra",
 }
 
 # Available models for settings UI
@@ -155,6 +157,10 @@ AVAILABLE_MODELS = {
         ("deepseek-r1-distill-llama-70b", "DeepSeek R1 Distill (推論)"),
         ("qwen/qwen3-32b", "Qwen3 32B"),
         ("openai/gpt-oss-120b", "GPT-OSS 120B"),
+    ],
+    "fugu": [
+        ("fugu", "Sakana Fugu (高速・既定 / 複数フロンティアを自動編成)"),
+        ("fugu-ultra", "Sakana Fugu Ultra (難問・多段 / 研究・論文再現・文献調査)"),
     ],
 }
 
@@ -214,6 +220,8 @@ def call_ai(messages: list[dict], system: str, engine: str, model: str, max_toke
         "venice": _call_venice,
         "perplexity": _call_perplexity,
         "groq": _call_groq,
+        "fugu": _call_fugu,
+        "fugu-ultra": _call_fugu,
     }
     fn = dispatch.get(engine, _call_gpt)
     try:
@@ -411,6 +419,38 @@ def _call_groq(messages: list[dict], system: str, model: str, max_tokens: int = 
         raise ValueError("GROQ_API_KEY not configured")
 
     client = openai.OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    oai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=oai_messages,
+    )
+
+    try:
+        if resp.usage:
+            log_api_cost(model, resp.usage.prompt_tokens, resp.usage.completion_tokens, "chat")
+    except Exception:
+        pass
+
+    return resp.choices[0].message.content
+
+
+def _call_fugu(messages: list[dict], system: str, model: str, max_tokens: int = 2048) -> str:
+    """Call Sakana Fugu via OpenAI-compatible API.
+
+    Fugu はオーケストレーションモデル (内部で複数フロンティア LLM を自動編成)。
+    model: "fugu" (高速・既定) / "fugu-ultra" (難問・多段)。
+    base_url は SAKANA_BASE_URL で上書き可 (既定 https://api.sakana.ai/v1)。
+    """
+    import openai
+    from data_manager import log_api_cost
+
+    api_key = get_secret("SAKANA_API_KEY")
+    if not api_key:
+        raise ValueError("SAKANA_API_KEY not configured")
+
+    base_url = get_secret("SAKANA_BASE_URL") or "https://api.sakana.ai/v1"
+    client = openai.OpenAI(api_key=api_key, base_url=base_url)
     oai_messages = [{"role": "system", "content": system}] + messages
     resp = client.chat.completions.create(
         model=model,

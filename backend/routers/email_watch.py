@@ -204,16 +204,15 @@ def _classify_batch(emails: list[dict], engine: str) -> list[dict]:
         for e in emails
     )
     user_msg = f"以下 {len(emails)} 件のメールを分類してください:\n\n{batch_text}"
-    if engine not in DEFAULT_MODELS:
-        engine = "gpt"
-    model = DEFAULT_MODELS[engine]
+    # 分類は Haiku 固定 (Opus/GPT-5.5 だと 20 件で ~$0.9、 頻繁スキャンで月 ¥5 万到達したため)
+    # 品質差は分類タスクでは小さいので Haiku で十分。
     try:
         raw = call_ai(
             messages=[{"role": "user", "content": user_msg}],
             system=CLASSIFY_PROMPT,
-            engine=engine,
-            model=model,
-            max_tokens=4000,
+            engine="claude",
+            model="claude-haiku-4-5",
+            max_tokens=2500,
         )
     except Exception as e:
         raise HTTPException(500, f"AI classify failed: {e}")

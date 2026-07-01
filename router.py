@@ -273,10 +273,12 @@ def _call_gpt(messages: list[dict], system: str, model: str, max_tokens: int = 2
 
     client = openai.OpenAI(api_key=api_key)
     oai_messages = [{"role": "system", "content": system}] + messages
+    m = model.lower()
+    tok_key = "max_completion_tokens" if (m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4")) else "max_tokens"
     resp = client.chat.completions.create(
         model=model,
-        max_tokens=max_tokens,
         messages=oai_messages,
+        **{tok_key: max_tokens},
     )
 
     try:

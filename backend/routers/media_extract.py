@@ -89,7 +89,7 @@ def _upload_and_extract(file_path: Path, mime_type: str) -> dict:
     if uploaded.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini upload failed: state={uploaded.state.name}")
     model = genai.GenerativeModel(
-        "gemini-2.0-flash-exp",
+        "gemini-3-flash-preview",
         system_instruction=SYSTEM_PROMPT,
     )
     resp = model.generate_content(
@@ -111,7 +111,7 @@ def _extract_youtube(url: str) -> dict:
     """YouTube URL を Gemini に直接渡す (fileData)."""
     genai = _gemini_client()
     model = genai.GenerativeModel(
-        "gemini-2.0-flash-exp",
+        "gemini-3-flash-preview",
         system_instruction=SYSTEM_PROMPT,
     )
     contents = [

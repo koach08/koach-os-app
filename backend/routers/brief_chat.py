@@ -292,7 +292,7 @@ def _critique(text: str) -> str:
             system=critic_system,
             engine="claude",
             model=_CRITIC_MODEL,
-            max_tokens=700,
+            max_tokens=500,
         )
         cleaned = (cleaned or "").strip()
         return cleaned or text
@@ -325,8 +325,10 @@ def brief_chat(payload: BriefChatIn):
         messages = [{"role": "user", "content": seed}]
 
     # 一段目
+    # max_tokens は 450 に抑える。プロンプトは「3〜5行」なので十分で、opus 過負荷時に
+    # 二段生成 (draft + critique) が Railway プロキシ制限を超えて upstream error になるのを防ぐ。
     try:
-        draft = call_ai(messages=messages, system=system, engine=engine, model=model, max_tokens=700)
+        draft = call_ai(messages=messages, system=system, engine=engine, model=model, max_tokens=450)
     except Exception as e:
         return {"reply": f"(対話生成に失敗: {e})", "engine_used": engine, "critiqued": False}
 

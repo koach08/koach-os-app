@@ -425,6 +425,24 @@ def _job_brain_health_check(
 # 昇格は本人が判断 (承認導線は次段)。read-only 方針を維持。
 
 
+def _extract_json_array(text: str) -> list | None:
+    """LLM 出力から JSON 配列を寛容に取り出す。コードフェンス除去 + 最初の[〜最後の]。"""
+    import re
+    if not text:
+        return None
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?", "", t).strip()
+    t = re.sub(r"```$", "", t).strip()
+    start, end = t.find("["), t.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        val = json.loads(t[start:end + 1])
+        return val if isinstance(val, list) else None
+    except Exception:
+        return None
+
+
 def _gather_raw_and_structured(max_chars: int = 100_000) -> tuple[str, str, dict]:
     """生シグナル(未構造)と既存の構造化知識を分けて返す。既存を渡すのは重複提案を避けるため。"""
     from data_manager import (
@@ -526,40 +544,78 @@ def _job_consolidate(
     except Exception as e:
         scan_out = f"(一次抽出失敗: {e})"
 
-    # ─ 二段目: 上位を decisions 形式の【下書き】に整形 (提案のみ・昇格ボタン用) ─
+    # ─ 二段目: 上位を decisions 形式の構造化下書きに整形。JSON で受けてレビューキューに保存 ─
     refine_system = (
-        "あなたは志柿の参謀です。一次抽出の塊のうち価値の高い上位3〜6件を、そのまま昇格できる"
-        "構造化下書きにします。decision として残すものは次の形式で書いてください:\n\n"
-        "### 提案N: {タイトル}\n"
-        "- kind: decision | concept | failure\n"
-        "- context: どういう状況・背景か (1-2行)\n"
-        "- options: 検討した選択肢 (あれば箇条書き、無ければ省略)\n"
-        "- chosen: 実際に選んだ/現状の結論\n"
-        "- reasoning: なぜそうか (根拠の生シグナルに触れる)\n"
-        "- domain: personal|research|platform|revenue|teaching のどれか\n\n"
-        "実データには書き込まない (これは下書き提案)。冒頭に『昇格を勧める順に N 件』と件数。"
-        "結論から。です/ます。抽象名詞「〜性」「重要性」禁止。一人称は「自分」。"
+        "あなたは志柿の参謀です。一次抽出の塊のうち価値の高い上位3〜6件を、そのまま decisions に"
+        "昇格できる構造化下書きにします。出力は【厳密な JSON 配列のみ】。前置き・説明・コードフェンスを"
+        "一切書かないでください。各要素は次のキーを持ちます:\n"
+        '{"kind":"decision|concept|failure", "title":"短い見出し", "context":"状況・背景(1-2行)", '
+        '"options":["検討した選択肢",...], "chosen":"選んだ/現状の結論", '
+        '"reasoning":"なぜそうか。根拠の生シグナルに触れる", "domain":"personal|research|platform|revenue|teaching"}\n'
+        "文体は です/ます、一人称は「自分」、抽象名詞「〜性」「重要性」は使わない。options が無ければ空配列。"
     )
     refine_input = f"# 一次抽出\n{scan_out}\n\n# 生シグナル(参照用)\n{raw[:50000]}"
+    parsed: list[dict] | None = None
+    refine_raw = ""
     try:
-        refine_out = call_ai(
+        refine_raw = call_ai(
             messages=[{"role": "user", "content": refine_input}],
             system=refine_system, engine=refine_engine, model=refine_model, max_tokens=3000,
         )
+        parsed = _extract_json_array(refine_raw)
     except Exception as e:
-        refine_out = f"(整形失敗: {e})\n\n一次抽出:\n{scan_out}"
+        refine_raw = f"(整形失敗: {e})\n\n一次抽出:\n{scan_out}"
+
+    # レビューキューへ保存 (dedup は add_proposal 側)。実 decisions には書かない。
+    saved: list[dict] = []
+    parse_ok = isinstance(parsed, list) and len(parsed) > 0
+    if parse_ok:
+        from routers.proposals import add_proposal
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            rec = add_proposal(item)
+            if rec:
+                saved.append(rec)
 
     header = (
         "生シグナル走査: "
         + ", ".join(f"{k}={v}" for k, v in counts.items() if not k.startswith("_"))
         + f" / raw {counts.get('_raw_chars', 0)}字\n"
         + f"engine: scan={scan_engine}:{scan_model} → refine={refine_engine}:{refine_model}\n"
-        + "※これは【下書き提案】です。承認したものだけ decisions に昇格してください。\n"
         + "─" * 20 + "\n"
     )
+
+    if parse_ok:
+        n_new = len(saved)
+        n_dup = len(parsed) - n_new
+        body_lines = [
+            f"昇格候補を {n_new} 件 レビューキューに追加しました"
+            + (f" (重複 {n_dup} 件はスキップ)" if n_dup > 0 else "") + "。",
+            "承認は Koach OS の『📥 承認待ち』(/proposals) から 1 タップで decisions に昇格できます。",
+            "",
+        ]
+        for i, p in enumerate(saved, 1):
+            body_lines.append(f"### 提案{i}: {p['title']}  [{p['kind']}/{p['domain']}]")
+            if p.get("context"):
+                body_lines.append(f"- context: {p['context']}")
+            if p.get("options"):
+                body_lines.append("- options: " + " / ".join(p["options"]))
+            if p.get("chosen"):
+                body_lines.append(f"- chosen: {p['chosen']}")
+            if p.get("reasoning"):
+                body_lines.append(f"- reasoning: {p['reasoning']}")
+            body_lines.append("")
+        final = header + "\n".join(body_lines)
+    else:
+        final = (
+            header
+            + "※ 構造化(JSON)の解釈に失敗したため、レビューキューには入れていません。"
+            "一次抽出と生成結果を貼ります。\n\n" + (refine_raw or "(空)")
+        )
+
     return _finish("consolidate", "知識の構造化 (compile)",
-                   {"final": header + refine_out, "tool_calls": 0,
-                    "model": f"{scan_model}+{refine_model}"})
+                   {"final": final, "tool_calls": 0, "model": f"{scan_model}+{refine_model}"})
 
 
 # ─── routes ───

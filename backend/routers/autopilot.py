@@ -271,6 +271,152 @@ def _job_backlog_progress(max_items: int, model: str) -> dict:
     return _finish("backlog-progress", "バックログ自律消化", _run_readonly_agent(mission, max_steps=6, model=model))
 
 
+# ─── Brain Health Check (週次・二段) ───
+# Karpathy 方式の Step 6「LLM Health Check」を koach-os ネイティブで実装。
+# 蓄積した知識 (decisions/failures/work_log/memos/heuristics/experiences) を週1でフル走査し、
+# 矛盾・欠落・重複・数値不整合・新規候補を洗い出す。「追加と整理の両輪」で脳が腐るのを防ぐ装置。
+# 二段: Gemini 3.1 Pro で長文コンテキストを一気に読む → Opus 4.8 で有力 issue を精査し修正案まで。
+# スコープは【報告 + 修正案の提案】まで。実データへの自動書き込みはしない (read-only 方針を維持)。
+
+BRAIN_SCAN_ENGINE = "gemini"
+BRAIN_SCAN_MODEL = "gemini-3.1-pro-preview"
+BRAIN_REFINE_ENGINE = "claude"
+BRAIN_REFINE_MODEL = "claude-opus-4-8"
+
+
+def _gather_brain_corpus(max_chars: int = 120_000) -> tuple[str, dict]:
+    """koach-os の永続知識を 1 本のテキストに束ねる。source=autopilot の memo は自己言及を避け除外。"""
+    from data_manager import (
+        read_jsonl, read_yaml,
+        DECISIONS_FILE, FAILURES_FILE, MEMOS_FILE, EXPERIENCES_FILE, HEURISTICS_FILE,
+    )
+
+    sections: list[str] = []
+    counts: dict[str, int] = {}
+    truncated = False
+
+    def _add(name: str, entries: list, fmt) -> None:
+        nonlocal truncated
+        counts[name] = len(entries)
+        if not entries:
+            return
+        body = "\n".join(fmt(e) for e in entries)
+        sections.append(f"## {name} ({len(entries)}件)\n{body}")
+
+    try:
+        decisions = read_jsonl(DECISIONS_FILE)
+        _add("decisions", decisions, lambda d:
+             f"- [{str(d.get('timestamp',''))[:10]}] "
+             f"{d.get('title') or d.get('decision','')}: {str(d.get('reasoning',''))[:220]}")
+    except Exception:
+        pass
+    try:
+        failures = read_jsonl(FAILURES_FILE)
+        _add("failures", failures, lambda f:
+             f"- {f.get('what') or f.get('what_happened','')}: "
+             f"学び={str(f.get('lesson') or f.get('prevention',''))[:180]}")
+    except Exception:
+        pass
+    try:
+        from routers.work_log import _materialize
+        wl = sorted(_materialize().values(), key=lambda w: w.get("date", ""), reverse=True)
+        _add("work_log", wl, lambda w:
+             f"- [{w.get('date','')}] [{w.get('category','')}] {w.get('title','')} "
+             f"(engine={w.get('engine','')}) {str(w.get('outcome',''))[:120]}")
+    except Exception:
+        pass
+    try:
+        # 自分の生成物 (source=autopilot) は除外。走り書きの生 memo だけを対象に。
+        memos = [m for m in read_jsonl(MEMOS_FILE) if m.get("source") != "autopilot"]
+        _add("memos", memos, lambda m: f"- {str(m.get('content',''))[:200]}")
+    except Exception:
+        pass
+    try:
+        experiences = read_jsonl(EXPERIENCES_FILE)
+        _add("experiences", experiences, lambda e: f"- {str(e.get('content') or e.get('experience',''))[:200]}")
+    except Exception:
+        pass
+    try:
+        heur = read_yaml(HEURISTICS_FILE)
+        if heur:
+            counts["heuristics"] = len(heur) if isinstance(heur, (list, dict)) else 1
+            sections.append("## heuristics\n" + json.dumps(heur, ensure_ascii=False)[:4000])
+    except Exception:
+        pass
+
+    corpus = "\n\n".join(sections)
+    if len(corpus) > max_chars:
+        corpus = corpus[:max_chars]
+        truncated = True
+    counts["_truncated"] = truncated
+    counts["_chars"] = len(corpus)
+    return corpus, counts
+
+
+def _job_brain_health_check(
+    scan_engine: str = BRAIN_SCAN_ENGINE, scan_model: str = BRAIN_SCAN_MODEL,
+    refine_engine: str = BRAIN_REFINE_ENGINE, refine_model: str = BRAIN_REFINE_MODEL,
+) -> dict:
+    from router import call_ai
+
+    corpus, counts = _gather_brain_corpus()
+    total = sum(v for k, v in counts.items() if not k.startswith("_"))
+    if not corpus.strip() or total == 0:
+        return _finish("brain-health-check", "脳の週次ヘルスチェック",
+                       {"final": "知識ベースがまだ空です。decisions/work_log/memos が溜まってから効きます。",
+                        "tool_calls": 0, "model": f"{scan_engine}+{refine_engine}"})
+
+    # ─ 一段目: 長文コンテキストで全走査し issue を洗い出す ─
+    scan_system = (
+        "あなたは志柿の知識ベースの監査役です。以下は koach-os に蓄積された永続知識 "
+        "(decisions/failures/work_log/memos/experiences/heuristics)。全体を読み、次の5観点で issue を"
+        "洗い出してください。お世辞や褒めは書かない。盲点を突く。\n"
+        "(a) 矛盾: 同じ対象について食い違う記述/数値\n"
+        "(b) 欠落: 3回以上言及されるのに整理された decision/まとめが無い概念\n"
+        "(c) 重複: ほぼ同じ内容が複数あり統合すべきもの\n"
+        "(d) 数値不整合/陳腐化: 根拠の古い数値、出典切れ\n"
+        "(e) 新規候補: 1件立てる価値のある論点\n"
+        "各 issue は必ず『どのエントリが根拠か』を1行添える。網羅的に。"
+    )
+    try:
+        scan_out = call_ai(
+            messages=[{"role": "user", "content": f"# 知識ベース\n{corpus}"}],
+            system=scan_system, engine=scan_engine, model=scan_model, max_tokens=4000,
+        )
+    except Exception as e:
+        scan_out = f"(一次スキャン失敗: {e})"
+
+    # ─ 二段目: 有力 issue に絞り、修正案まで出す (適用はしない) ─
+    refine_system = (
+        "あなたは志柿の参謀です。一次監査が出した issue 一覧と元コーパスを踏まえ、"
+        "価値の高いものを上位5〜8件に絞り、各々に具体的な修正案まで付けます。\n"
+        "- 統合案: 統合後の1行定義を書く\n"
+        "- 新規候補: 見出し構成 (箇条書き) を書く\n"
+        "- 矛盾/陳腐化: どちらが正か、判断できなければ本人への確認質問を1つ\n"
+        "実データへの書き込みはしない (提案のみ)。結論から。です/ます。抽象名詞「〜性」「重要性」禁止。"
+        "一人称は「自分」。冒頭に issue 件数と、今週まず1件やるならどれかを書く。"
+    )
+    refine_input = f"# 一次監査の issue 一覧\n{scan_out}\n\n# 元コーパス (参照用)\n{corpus[:60000]}"
+    try:
+        refine_out = call_ai(
+            messages=[{"role": "user", "content": refine_input}],
+            system=refine_system, engine=refine_engine, model=refine_model, max_tokens=2500,
+        )
+    except Exception as e:
+        refine_out = f"(精査失敗: {e})\n\n一次スキャン結果:\n{scan_out}"
+
+    header = (
+        f"走査: " + ", ".join(f"{k}={v}" for k, v in counts.items() if not k.startswith("_"))
+        + f" / {counts.get('_chars', 0)}字"
+        + (" ※コーパス上限で一部truncate" if counts.get("_truncated") else "")
+        + f"\nengine: scan={scan_engine}:{scan_model} → refine={refine_engine}:{refine_model}\n"
+        + "─" * 20 + "\n"
+    )
+    return _finish("brain-health-check", "脳の週次ヘルスチェック",
+                   {"final": header + refine_out, "tool_calls": 0,
+                    "model": f"{scan_model}+{refine_model}"})
+
+
 # ─── routes ───
 
 @router.post("/autopilot/morning-prep")
@@ -302,6 +448,19 @@ def backlog_progress(
 ):
     _check_token(x_cron_token)
     return _job_backlog_progress(max_items, model)
+
+
+@router.post("/autopilot/brain-health-check")
+def brain_health_check(
+    scan_engine: str = BRAIN_SCAN_ENGINE,
+    scan_model: str = BRAIN_SCAN_MODEL,
+    refine_engine: str = BRAIN_REFINE_ENGINE,
+    refine_model: str = BRAIN_REFINE_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    """週次: 知識ベースを二段 (Gemini 全走査 → Opus 精査+修正案) で監査。報告のみ、実データ不変。"""
+    _check_token(x_cron_token)
+    return _job_brain_health_check(scan_engine, scan_model, refine_engine, refine_model)
 
 
 @router.post("/autopilot/run-all")

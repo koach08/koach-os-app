@@ -417,6 +417,151 @@ def _job_brain_health_check(
                     "model": f"{scan_model}+{refine_model}"})
 
 
+# ─── Consolidation / Compile (週次・二段) ───
+# Karpathy 方式 Step 2「compile」+ Anthropic の "Dreaming"(過去ログを構造化知識に一括統合) を自前実装。
+# Brain Health Check が「欠落」を"見つける"のに対し、こちらは生の memos/work_log/failures を読み、
+# 構造化して残す価値のある知識を decisions 形式の【下書き】として"書く"。両輪で自己維持する脳になる。
+# スコープは【提案のみ】: 下書きを memo/メールに出すだけで decisions.jsonl には自動書き込みしない。
+# 昇格は本人が判断 (承認導線は次段)。read-only 方針を維持。
+
+
+def _gather_raw_and_structured(max_chars: int = 100_000) -> tuple[str, str, dict]:
+    """生シグナル(未構造)と既存の構造化知識を分けて返す。既存を渡すのは重複提案を避けるため。"""
+    from data_manager import (
+        read_jsonl, read_yaml,
+        DECISIONS_FILE, FAILURES_FILE, MEMOS_FILE, HEURISTICS_FILE,
+    )
+
+    counts: dict[str, int] = {}
+    raw_sections: list[str] = []
+
+    try:
+        memos = [m for m in read_jsonl(MEMOS_FILE) if m.get("source") != "autopilot"]
+        counts["memos"] = len(memos)
+        if memos:
+            raw_sections.append(
+                "## memos (走り書き)\n"
+                + "\n".join(f"- {str(m.get('content',''))[:220]}" for m in memos)
+            )
+    except Exception:
+        pass
+    try:
+        from routers.work_log import _materialize
+        wl = sorted(_materialize().values(), key=lambda w: w.get("date", ""), reverse=True)
+        counts["work_log"] = len(wl)
+        if wl:
+            raw_sections.append(
+                "## work_log (実績)\n"
+                + "\n".join(
+                    f"- [{w.get('date','')}] [{w.get('category','')}] {w.get('title','')} "
+                    f"(engine={w.get('engine','')}) {str(w.get('outcome',''))[:120]}" for w in wl
+                )
+            )
+    except Exception:
+        pass
+    try:
+        failures = read_jsonl(FAILURES_FILE)
+        counts["failures"] = len(failures)
+        if failures:
+            raw_sections.append(
+                "## failures\n"
+                + "\n".join(
+                    f"- {f.get('what') or f.get('what_happened','')}: "
+                    f"学び={str(f.get('lesson') or f.get('prevention',''))[:150]}" for f in failures
+                )
+            )
+    except Exception:
+        pass
+
+    # 既存の構造化知識 (重複回避用) — タイトル/要約だけで十分
+    existing_lines: list[str] = []
+    try:
+        decisions = read_jsonl(DECISIONS_FILE)
+        counts["existing_decisions"] = len(decisions)
+        for d in decisions:
+            existing_lines.append(f"- {d.get('title') or d.get('decision','')}")
+    except Exception:
+        pass
+    try:
+        heur = read_yaml(HEURISTICS_FILE)
+        if heur:
+            existing_lines.append("(heuristics) " + json.dumps(heur, ensure_ascii=False)[:1500])
+    except Exception:
+        pass
+
+    raw = "\n\n".join(raw_sections)[:max_chars]
+    existing = "\n".join(existing_lines)[:8000] or "(既存の構造化知識なし)"
+    counts["_raw_chars"] = len(raw)
+    return raw, existing, counts
+
+
+def _job_consolidate(
+    scan_engine: str = BRAIN_SCAN_ENGINE, scan_model: str = BRAIN_SCAN_MODEL,
+    refine_engine: str = BRAIN_REFINE_ENGINE, refine_model: str = BRAIN_REFINE_MODEL,
+) -> dict:
+    from router import call_ai
+
+    raw, existing, counts = _gather_raw_and_structured()
+    raw_total = counts.get("memos", 0) + counts.get("work_log", 0) + counts.get("failures", 0)
+    if not raw.strip() or raw_total == 0:
+        return _finish("consolidate", "知識の構造化 (compile)",
+                       {"final": "構造化できる生シグナルがまだありません。memos/work_log が溜まってから効きます。",
+                        "tool_calls": 0, "model": f"{scan_engine}+{refine_engine}"})
+
+    # ─ 一段目: 生シグナルから「構造化する価値のある塊」を抽出 (既存と重複しないもの) ─
+    scan_system = (
+        "あなたは志柿の知識整理係です。以下は未構造の生シグナル(memos/work_log/failures)と、"
+        "既に構造化ずみの知識一覧です。生シグナルを読み、繰り返し現れる/後で参照価値のある塊で、"
+        "『既存の構造化知識にまだ無いもの』だけを抽出してください。各塊について:\n"
+        "- 何についての知識か (1行)\n- 根拠となる生シグナル (どのエントリ)\n"
+        "- decision(意思決定) か concept(概念まとめ) か failure(教訓) のどれとして残すべきか\n"
+        "既存と重複するものは挙げない。お世辞は書かない。網羅より価値順。"
+    )
+    scan_input = f"# 生シグナル\n{raw}\n\n# 既に構造化ずみ (これと重複するものは除外)\n{existing}"
+    try:
+        scan_out = call_ai(
+            messages=[{"role": "user", "content": scan_input}],
+            system=scan_system, engine=scan_engine, model=scan_model, max_tokens=3500,
+        )
+    except Exception as e:
+        scan_out = f"(一次抽出失敗: {e})"
+
+    # ─ 二段目: 上位を decisions 形式の【下書き】に整形 (提案のみ・昇格ボタン用) ─
+    refine_system = (
+        "あなたは志柿の参謀です。一次抽出の塊のうち価値の高い上位3〜6件を、そのまま昇格できる"
+        "構造化下書きにします。decision として残すものは次の形式で書いてください:\n\n"
+        "### 提案N: {タイトル}\n"
+        "- kind: decision | concept | failure\n"
+        "- context: どういう状況・背景か (1-2行)\n"
+        "- options: 検討した選択肢 (あれば箇条書き、無ければ省略)\n"
+        "- chosen: 実際に選んだ/現状の結論\n"
+        "- reasoning: なぜそうか (根拠の生シグナルに触れる)\n"
+        "- domain: personal|research|platform|revenue|teaching のどれか\n\n"
+        "実データには書き込まない (これは下書き提案)。冒頭に『昇格を勧める順に N 件』と件数。"
+        "結論から。です/ます。抽象名詞「〜性」「重要性」禁止。一人称は「自分」。"
+    )
+    refine_input = f"# 一次抽出\n{scan_out}\n\n# 生シグナル(参照用)\n{raw[:50000]}"
+    try:
+        refine_out = call_ai(
+            messages=[{"role": "user", "content": refine_input}],
+            system=refine_system, engine=refine_engine, model=refine_model, max_tokens=3000,
+        )
+    except Exception as e:
+        refine_out = f"(整形失敗: {e})\n\n一次抽出:\n{scan_out}"
+
+    header = (
+        "生シグナル走査: "
+        + ", ".join(f"{k}={v}" for k, v in counts.items() if not k.startswith("_"))
+        + f" / raw {counts.get('_raw_chars', 0)}字\n"
+        + f"engine: scan={scan_engine}:{scan_model} → refine={refine_engine}:{refine_model}\n"
+        + "※これは【下書き提案】です。承認したものだけ decisions に昇格してください。\n"
+        + "─" * 20 + "\n"
+    )
+    return _finish("consolidate", "知識の構造化 (compile)",
+                   {"final": header + refine_out, "tool_calls": 0,
+                    "model": f"{scan_model}+{refine_model}"})
+
+
 # ─── routes ───
 
 @router.post("/autopilot/morning-prep")
@@ -461,6 +606,19 @@ def brain_health_check(
     """週次: 知識ベースを二段 (Gemini 全走査 → Opus 精査+修正案) で監査。報告のみ、実データ不変。"""
     _check_token(x_cron_token)
     return _job_brain_health_check(scan_engine, scan_model, refine_engine, refine_model)
+
+
+@router.post("/autopilot/consolidate")
+def consolidate(
+    scan_engine: str = BRAIN_SCAN_ENGINE,
+    scan_model: str = BRAIN_SCAN_MODEL,
+    refine_engine: str = BRAIN_REFINE_ENGINE,
+    refine_model: str = BRAIN_REFINE_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    """週次: 生シグナル (memos/work_log/failures) を二段で構造化下書きに compile。提案のみ、昇格は本人。"""
+    _check_token(x_cron_token)
+    return _job_consolidate(scan_engine, scan_model, refine_engine, refine_model)
 
 
 @router.post("/autopilot/run-all")

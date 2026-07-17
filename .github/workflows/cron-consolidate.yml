@@ -1,0 +1,35 @@
+name: Consolidate (週次・知識の構造化 compile)
+
+on:
+  schedule:
+    # 22:00 UTC 火曜 = 07:00 JST 水曜 — Health Check(日曜) と別日に置き、週の中盤で構造化
+    - cron: "0 22 * * 2"
+  workflow_dispatch: {}
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger consolidate
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$BACKEND_URL" ] || [ -z "$CRON_TOKEN" ]; then
+            echo "::error::BACKEND_URL or CRON_TOKEN secret is missing"
+            exit 1
+          fi
+          # 二段 (Gemini→Opus) で時間がかかるため max-time は長め。DNS/接続ノイズはリトライで吸収
+          for attempt in 1 2 3; do
+            if curl -fsSL -X POST "$BACKEND_URL/api/autopilot/consolidate" \
+              -H "X-Cron-Token: $CRON_TOKEN" \
+              -H "Content-Type: application/json" \
+              --max-time 420 \
+              -w "\nHTTP %{http_code}\n"; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::consolidate failed after 3 attempts"
+          exit 1

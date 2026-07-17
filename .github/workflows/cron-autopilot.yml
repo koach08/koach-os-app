@@ -1,0 +1,35 @@
+name: Autopilot (24/7 自律プレップ)
+
+on:
+  schedule:
+    # 21:30 UTC = 06:30 JST — 朝に読める時間へ間に合わせる
+    - cron: "30 21 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-all:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger autopilot run-all
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$BACKEND_URL" ] || [ -z "$CRON_TOKEN" ]; then
+            echo "::error::BACKEND_URL or CRON_TOKEN secret is missing"
+            exit 1
+          fi
+          # 一時的な DNS/接続失敗 (curl 6/7 等) はランナー側ノイズなのでリトライで吸収
+          for attempt in 1 2 3; do
+            if curl -fsSL -X POST "$BACKEND_URL/api/autopilot/run-all" \
+              -H "X-Cron-Token: $CRON_TOKEN" \
+              -H "Content-Type: application/json" \
+              --max-time 300 \
+              -w "\nHTTP %{http_code}\n"; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::autopilot run-all failed after 3 attempts"
+          exit 1

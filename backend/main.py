@@ -111,6 +111,8 @@ from routers import routines
 app.include_router(routines.router, prefix="/api")
 from routers import assist
 app.include_router(assist.router, prefix="/api")
+from routers import autopilot
+app.include_router(autopilot.router, prefix="/api")
 
 
 @app.get("/api/health")

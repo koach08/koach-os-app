@@ -1,0 +1,324 @@
+"""
+Autopilot — 24/7 自律プレップ (read-only + report)
+====================================================
+本人が見ていない時間に裏で走る「Spark 的」自律エージェント。
+
+3 ジョブ:
+- POST /api/autopilot/morning-prep      : 予定を見て会議準備を web 調査 → レポート
+- POST /api/autopilot/email-triage       : 新着メールを 3 分類トリアージ → レポート
+- POST /api/autopilot/backlog-progress   : 未処理バックログを調べ物/下書きで前進 → レポート
+- POST /api/autopilot/run-all            : 上記 3 つを順に実行 (cron 用)
+
+ガードレール (重要):
+- 使える道具は【読み取り専用】のみ (web / 検索 / カレンダー閲覧 / 過去データ検索 / マルチモーダル解析)。
+- create_event / add_backlog / save_decision 等の【実データ書き込み】は一切与えない。
+- 成果物は memo (source=autopilot) に保存 + Resend メール (設定時のみ)。実データは変更しない。
+
+Auth: header `X-Cron-Token` が env CRON_TOKEN と一致しないと 401 (cron._check_token を再利用)。
+Model: コスト配慮でデフォルト claude-haiku-4-5 (email_watch の教訓)。query `model` で上書き可。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.request
+
+from fastapi import APIRouter, Header
+
+from data_manager import (
+    MEMOS_FILE,
+    append_jsonl,
+    generate_id,
+    get_secret,
+    now_jst,
+    timestamp_jst,
+)
+from routers.cron import _check_token
+
+# 既存エージェントのツール群を read-only に絞って再利用 (agent.py 本体は無改変)
+from routers.agent import TOOL_SCHEMA, TOOL_FUNCS, SYSTEM_PROMPT as _AGENT_SYSTEM
+
+router = APIRouter()
+
+# ─── read-only ツール許可リスト (書き込み系は意図的に除外) ───
+READ_ONLY_TOOLS = {
+    "web_search",
+    "web_fetch",
+    "search_my_data",
+    "list_calendar",
+    "analyze_image",
+    "analyze_pdf",
+    "analyze_video_url",
+    "analyze_audio",
+}
+_RO_SCHEMA = [t for t in TOOL_SCHEMA if t.get("name") in READ_ONLY_TOOLS]
+_RO_FUNCS = {k: v for k, v in TOOL_FUNCS.items() if k in READ_ONLY_TOOLS}
+
+DEFAULT_AUTOPILOT_MODEL = "claude-haiku-4-5"
+
+AUTOPILOT_SYSTEM = _AGENT_SYSTEM + """
+
+## 自律モード (Autopilot)
+- あなたは今、本人が見ていない時間に裏で自走している。対話相手はいない。質問で止まらず、手元の道具で調べて結論まで出す。
+- 使える道具は【読み取り専用】のみ (web / 検索 / カレンダー閲覧 / 過去データ検索 / マルチモーダル解析)。カレンダーやバックログへの書き込みはできない。
+- 提案は「提案:」として文章で書くだけ。勝手に実行しない (そもそもできない)。
+- 最終出力は本人が後で読むレポート。結論から、箇条書き中心、200-500字程度。事実は道具で確認してから書く。
+- 最後に『次の一手』を 1 つだけ。
+"""
+
+
+def _run_readonly_agent(mission: str, max_steps: int = 5, model: str = DEFAULT_AUTOPILOT_MODEL) -> dict:
+    """read-only ツールだけを与えた小さな自律ループ。agent_chat のロジックを隔離複製。"""
+    import anthropic
+
+    api_key = get_secret("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"final": "(ANTHROPIC_API_KEY not set)", "tool_calls": 0, "model": model}
+    client = anthropic.Anthropic(api_key=api_key)
+
+    messages: list[dict] = [{"role": "user", "content": mission}]
+    final_text = ""
+    tool_calls = 0
+
+    for _ in range(max_steps):
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=3000,
+                system=AUTOPILOT_SYSTEM,
+                tools=_RO_SCHEMA,
+                messages=messages,
+            )
+        except Exception as e:
+            return {"final": f"(Claude error: {e})", "tool_calls": tool_calls, "model": model}
+
+        text_parts: list[str] = []
+        tool_uses: list[dict] = []
+        for block in resp.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
+        text_now = "".join(text_parts).strip()
+
+        if resp.stop_reason == "tool_use" and tool_uses:
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for tu in tool_uses:
+                fn = _RO_FUNCS.get(tu["name"])
+                if not fn:
+                    # 書き込み系を呼ぼうとしたら拒否 (二重の安全網)
+                    out = f"(tool {tu['name']} は autopilot では無効。読み取り専用のみ)"
+                else:
+                    tool_calls += 1
+                    try:
+                        out = str(fn(tu["input"]))[:6000]
+                    except Exception as e:
+                        out = f"(tool {tu['name']} error: {e})"
+                results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": out})
+            messages.append({"role": "user", "content": results})
+            continue
+
+        final_text = text_now
+        break
+    else:
+        final_text = final_text or "(max_steps 到達)"
+
+    return {"final": final_text, "tool_calls": tool_calls, "model": model}
+
+
+def _save_report_memo(job: str, text: str) -> str:
+    entry = {
+        "id": generate_id("memo"),
+        "content": f"🤖 [autopilot:{job}] {now_jst().strftime('%m/%d %H:%M')}\n\n{text}",
+        "color": "blue",
+        "pinned": False,
+        "created_at": timestamp_jst(),
+        "created_at_ts": int(now_jst().timestamp() * 1000),
+        "updated_at": timestamp_jst(),
+        "source": "autopilot",
+        "autopilot_job": job,
+    }
+    append_jsonl(MEMOS_FILE, entry)
+    return entry["id"]
+
+
+def _send_report_email(subject: str, text: str) -> bool:
+    """Resend で本人にメール (cron.notify_brief と同じ経路)。未設定ならスキップ。"""
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    to_email = os.environ.get("NOTIFY_EMAIL", "")
+    from_email = os.environ.get("NOTIFY_FROM", "Koach OS <onboarding@resend.dev>")
+    if not api_key or not to_email:
+        return False
+    payload = json.dumps({
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "text": text,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "koach-os-autopilot/1.0 (+https://koach-os.vercel.app)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            return 200 <= res.status < 300
+    except Exception:
+        return False
+
+
+def _finish(job: str, title: str, out: dict) -> dict:
+    text = out.get("final", "")
+    memo_id = _save_report_memo(job, text)
+    emailed = _send_report_email(f"🤖 Autopilot: {title} {now_jst().strftime('%m/%d')}", text)
+    return {
+        "job": job,
+        "report": text,
+        "memo_id": memo_id,
+        "emailed": emailed,
+        "tool_calls": out.get("tool_calls", 0),
+        "model_used": out.get("model", ""),
+        "generated_at": now_jst().isoformat(),
+    }
+
+
+# ─── 各ジョブ本体 (token チェックなし。route か run-all が先にチェック) ───
+
+def _job_morning_prep(days_ahead: int, model: str) -> dict:
+    try:
+        from routers.agent import tool_list_calendar
+        cal = tool_list_calendar(days_ahead)
+    except Exception as e:
+        cal = f"(カレンダー取得失敗: {e})"
+    mission = (
+        f"向こう {days_ahead} 日の予定に対する朝の準備レポートを作る。\n\n"
+        f"## 現在の予定\n{cal}\n\n"
+        "各予定について: 相手や議題が読み取れるものは search_my_data で過去の関連 memo/decision を確認し、"
+        "必要なら web_search / web_fetch で最新の背景を調べ、準備すべき点を 1-2 個ずつ挙げる。"
+        "予定が無ければ『予定なし。空き時間の使い道』を 1 つだけ提案する。"
+    )
+    return _finish("morning-prep", "朝の自律プレップ", _run_readonly_agent(mission, max_steps=6, model=model))
+
+
+def _job_email_triage(days: int, limit: int, model: str) -> dict:
+    emails: list[dict] = []
+    gather_err = ""
+    try:
+        from routers.gmail_calendar import gmail_recent
+        data = gmail_recent(days=days, limit=limit, slot=0)
+        emails = data.get("emails", []) if isinstance(data, dict) else []
+    except Exception as e:
+        gather_err = str(e)
+
+    if not emails:
+        text = f"新着メールなし (直近 {days} 日)。" + (f" 取得エラー: {gather_err}" if gather_err else "")
+        return _finish("email-triage", "メール自律トリアージ",
+                       {"final": text, "tool_calls": 0, "model": model})
+
+    digest = "\n".join(
+        f"- from={str(e.get('from',''))[:60]} | subj={str(e.get('subject',''))[:80]} | "
+        f"{str(e.get('snippet', e.get('body','')))[:120]}"
+        for e in emails[:limit]
+    )
+    mission = (
+        "以下の新着メールをトリアージする。実際の返信や予定追加はしない (できない)。\n\n"
+        f"## 新着メール ({len(emails)} 件)\n{digest}\n\n"
+        "3 分類で整理: 【要対応 (締切/依頼)】【予定候補 (日時を含む)】【無視可】。"
+        "各メールを 1 行で。相手の過去文脈が要るものは search_my_data で確認。"
+        "最後に『今日まず着手すべき 1 通』を提案。"
+    )
+    return _finish("email-triage", "メール自律トリアージ", _run_readonly_agent(mission, max_steps=5, model=model))
+
+
+def _job_backlog_progress(max_items: int, model: str) -> dict:
+    pending: list[dict] = []
+    try:
+        from routers.productivity import _load_backlog
+        backlog = _load_backlog()
+        done = {"done", "archived", "completed", "resolved", "cancelled"}
+        pending = [
+            b for b in backlog
+            if str(b.get("status", "")).lower() not in done and not b.get("done")
+        ][:max_items]
+    except Exception as e:
+        return _finish("backlog-progress", "バックログ自律消化",
+                       {"final": f"(バックログ取得失敗: {e})", "tool_calls": 0, "model": model})
+
+    if not pending:
+        return _finish("backlog-progress", "バックログ自律消化",
+                       {"final": "未処理のバックログなし。", "tool_calls": 0, "model": model})
+
+    items = "\n".join(
+        f"- {str(b.get('title', b.get('text','')))[:100]} "
+        f"(cat={b.get('category','')}, note={str(b.get('notes',''))[:80]})"
+        for b in pending
+    )
+    mission = (
+        "以下の未処理バックログのうち、調べ物や下書きで前進できるものを裏で進める。実データ書き込みはしない。\n\n"
+        f"## 未処理バックログ (上位 {len(pending)} 件)\n{items}\n\n"
+        "全部やろうとせず、最も前進させやすい 1-2 件に集中。"
+        "web_search / web_fetch で必要な情報を集め、次に本人がやる作業を 1-2 手まで具体化する "
+        "(下書き文・箇条書き・参考リンク)。"
+    )
+    return _finish("backlog-progress", "バックログ自律消化", _run_readonly_agent(mission, max_steps=6, model=model))
+
+
+# ─── routes ───
+
+@router.post("/autopilot/morning-prep")
+def morning_prep(
+    days_ahead: int = 1,
+    model: str = DEFAULT_AUTOPILOT_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    _check_token(x_cron_token)
+    return _job_morning_prep(days_ahead, model)
+
+
+@router.post("/autopilot/email-triage")
+def email_triage(
+    days: int = 1,
+    limit: int = 30,
+    model: str = DEFAULT_AUTOPILOT_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    _check_token(x_cron_token)
+    return _job_email_triage(days, limit, model)
+
+
+@router.post("/autopilot/backlog-progress")
+def backlog_progress(
+    max_items: int = 3,
+    model: str = DEFAULT_AUTOPILOT_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    _check_token(x_cron_token)
+    return _job_backlog_progress(max_items, model)
+
+
+@router.post("/autopilot/run-all")
+def run_all(
+    model: str = DEFAULT_AUTOPILOT_MODEL,
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    """cron 用: 3 ジョブを順に実行。1 つ失敗しても他は続行。"""
+    _check_token(x_cron_token)
+    results = {}
+    for name, fn in (
+        ("morning-prep", lambda: _job_morning_prep(1, model)),
+        ("email-triage", lambda: _job_email_triage(1, 30, model)),
+        ("backlog-progress", lambda: _job_backlog_progress(3, model)),
+    ):
+        try:
+            results[name] = fn()
+        except Exception as e:
+            results[name] = {"job": name, "error": str(e)}
+    return {"ran": list(results.keys()), "results": results, "generated_at": now_jst().isoformat()}

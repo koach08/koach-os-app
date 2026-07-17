@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import BriefChat from "@/components/BriefChat";
 
 type Completion = {
   kind: string;
@@ -125,6 +126,9 @@ export default function EveningPage() {
                 </div>
                 <div className="text-[15px] whitespace-pre-wrap leading-[1.85]">{data.ai_brief}</div>
               </div>
+
+              {/* 対話レイヤー (Worklog Phase B-2) — 振り返りを往復にする */}
+              <BriefChat mode="evening" engine={engine} />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <Section title="今日完了したこと" count={data.completions.length} icon="✓">

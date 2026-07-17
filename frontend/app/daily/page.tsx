@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import BriefChat from "@/components/BriefChat";
 
 type Event = {
   id?: string;
@@ -441,6 +442,9 @@ export default function DailyPage() {
                   </div>
                 </div>
               </div>
+
+              {/* 対話レイヤー (Worklog Phase B-2) — brief を往復にする */}
+              <BriefChat mode="daily" engine={engine} />
 
               {/* Coach バックログ — Daily Brief から直接チェック */}
               {(data.backlog ?? []).length > 0 && (

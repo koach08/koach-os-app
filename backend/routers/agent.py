@@ -181,7 +181,7 @@ def tool_analyze_pdf(prompt: str, file_id: str | None = None) -> str:
         uploaded = genai.get_file(uploaded.name)
     if uploaded.state.name != "ACTIVE":
         return f"(upload failed: {uploaded.state.name})"
-    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+    model = genai.GenerativeModel("gemini-3-flash-preview")
     resp = model.generate_content([uploaded, prompt or "この PDF の要点を 5 点で"], generation_config={"max_output_tokens": 4000})
     return resp.text or ""
 
@@ -192,7 +192,7 @@ def tool_analyze_video_url(url: str, prompt: str) -> str:
         return "(GEMINI_API_KEY not set)"
     import google.generativeai as genai
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+    model = genai.GenerativeModel("gemini-3-flash-preview")
     contents = [
         {"file_data": {"mime_type": "video/youtube", "file_uri": url}},
         {"text": prompt or "この動画の要点を 5 点で"},

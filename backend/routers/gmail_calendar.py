@@ -570,7 +570,7 @@ async def extract_events_from_pdf(
             genai.configure(api_key=api_key)
             today_str = _now_jst().strftime("%Y-%m-%d (%A)")
             prompt = _build_pdf_native_prompt(today_str, file.filename or "uploaded.pdf")
-            model_name = DEFAULT_MODELS.get("gemini", "gemini-2.0-flash-exp")
+            model_name = DEFAULT_MODELS.get("gemini", "gemini-3.1-pro-preview")
             mdl = genai.GenerativeModel(model_name=model_name)
             resp = mdl.generate_content(
                 [

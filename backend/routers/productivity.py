@@ -426,7 +426,7 @@ Output: JSON array only, no markdown."""
             messages=[{"role": "user", "content": f"以下の計画から時間ブロックを抽出してください:\n\n{plan_text}"}],
             system=system_prompt,
             engine="gemini",
-            model=DEFAULT_MODELS.get("gemini", "gemini-2.0-flash-exp"),
+            model=DEFAULT_MODELS.get("gemini", "gemini-3.1-pro-preview"),
             max_tokens=4000,
         )
     except Exception as e:

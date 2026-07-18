@@ -139,6 +139,7 @@ class ScanReq(BaseModel):
     days: int = 7          # 何日ぶんのメールを見るか
     max_per_slot: int = 50
     engine: str = "gemini"
+    ai_dedupe: bool = True # スキャン末尾で AI 意味重複判定を走らせるか
 
 
 # 「確実に大学から来ているもの」= 送信元が ac.jp のメールだけ。キーワード一致 (委員会/講義…)
@@ -146,7 +147,7 @@ class ScanReq(BaseModel):
 UNI_SENDER_QUERY = "(from:ac.jp OR from:hokudai.ac.jp)"
 
 
-def _scan(days: int, max_per_slot: int, engine: str) -> dict:
+def _scan(days: int, max_per_slot: int, engine: str, ai_dedupe: bool = True) -> dict:
     from gcal import is_configured, list_recent_emails, _configured_slots
     from routers.gmail_calendar import _build_system_prompt, _process_batch, BATCH_SIZE
     from data_manager import now_jst as _now
@@ -256,8 +257,8 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         else:
             new_pending += 1
 
-    # 抽出は非決定的なので、万一 pending に近似重複が残っても末尾で畳む (自己浄化)
-    collapsed = _collapse_near_dups()
+    # 抽出は非決定的なので末尾で重複を畳む (自己浄化): 文字列 collapse → AI 意味 collapse
+    dd = _collapse(use_ai=ai_dedupe)
 
     return {
         "emails_scanned": len(emails),
@@ -267,7 +268,8 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         "new_pending": new_pending,
         "already_calendar": already_cal,
         "duplicate": duplicate,
-        "deduped": collapsed,
+        "deduped": dd.get("deduped", 0),
+        "ai_deduped": dd.get("ai_deduped", 0),
         "ai_failures": ai_failures,
         "engine_used": eng,
         "errors": errors,
@@ -329,17 +331,136 @@ def _collapse_near_dups() -> int:
     return collapsed
 
 
+# ─── 意味ベースの重複判定 (AI) ──────────────────────────────────────────────
+# 文字列 collapse は (event_type 差 / 終日 vs 時刻 差) で群が分かれると取りこぼす。
+# AI に「現実に同じ1件か」を判断させて、別プログラム/別コマは残しつつ重複だけ畳む。
+DEDUP_ENGINE = "gemini"          # 強力かつ安価。コスト配慮で pro を daily 1 コール
+DEDUP_MODEL: str | None = None   # None → DEFAULT_MODELS[gemini]
+
+_AI_DEDUP_SYSTEM = """あなたは志柿浩一郎 (北海道大学) の秘書。未反映の大学予定リストから
+「現実に同じ1件の予定」を別メール・別表記で重複登録しているものだけを 1 つにまとめます。
+
+まとめてよいのは現実に同一の会議/締切/試験監督コマ等だけ。次は【絶対にまとめない】:
+- 科研費などで日付が同じでも時刻が違う (例 15:00 ID取得 / 17:00 部局提出) → 別物
+- 別室受験の「4限」と「5限」、監督コマ違い → 別物
+- 種目・分野・プログラム違い (奨励研究 / 基盤研究、国際共同研究強化 / 学術変革 など) → 別物
+- 会議本体と、その議事録確認や資料提出の締切 → 別物
+
+各グループでは、最も具体的で情報量が多い 1 件 (正式名称・時刻あり) の index を keep にする。
+
+出力は厳密な JSON のみ。前置き・説明・コードフェンス禁止:
+{"groups":[{"keep": <index>, "merge":[<重複の index>, ...]}, ...]}
+重複が無ければ {"groups":[]}。merge には keep と同じ index を入れない。"""
+
+
+def _parse_json_obj(raw: str) -> dict | None:
+    import json as _json
+    t = (raw or "").strip()
+    t = re.sub(r"^```(?:json)?", "", t).strip()
+    t = re.sub(r"```$", "", t).strip()
+    s, e = t.find("{"), t.rfind("}")
+    if s == -1 or e == -1 or e < s:
+        return None
+    try:
+        v = _json.loads(t[s:e + 1])
+        return v if isinstance(v, dict) else None
+    except Exception:
+        return None
+
+
+def _ai_collapse(engine: str = DEDUP_ENGINE, model: str | None = DEDUP_MODEL) -> dict:
+    """pending 全体を AI で意味クラスタリングし、同一イベントの重複を dismiss。返り値に件数。"""
+    from router import call_ai, DEFAULT_MODELS
+
+    pend = [e for e in _materialize().values() if e.get("status") == "pending"]
+    if len(pend) < 2:
+        return {"ai_deduped": 0, "groups": 0, "candidates": len(pend)}
+
+    pend.sort(key=lambda x: (str(x.get("start_iso", "")), str(x.get("title", ""))))
+    lines = []
+    for i, it in enumerate(pend):
+        day = str(it.get("start_iso", ""))[:10]
+        lines.append(
+            f"{i}\t{day} {_time_key(it.get('start_iso',''))}\t{it.get('event_type','')}\t"
+            f"{str(it.get('title',''))[:80]}\t元:{str(it.get('source_subject',''))[:36]}"
+        )
+    user = ("# 未反映の予定 (index<TAB>日付 時刻<TAB>種別<TAB>タイトル<TAB>元メール)\n"
+            + "\n".join(lines)
+            + "\n\n同じ実イベントを指す index をまとめて JSON で返してください。")
+
+    eng = engine if engine in DEFAULT_MODELS else "gemini"
+    mdl = model or DEFAULT_MODELS.get(eng, DEFAULT_MODELS["gemini"])
+    try:
+        raw = call_ai(messages=[{"role": "user", "content": user}],
+                      system=_AI_DEDUP_SYSTEM, engine=eng, model=mdl, max_tokens=1500)
+    except Exception as e:
+        return {"ai_deduped": 0, "groups": 0, "candidates": len(pend), "ai_error": str(e)}
+
+    data = _parse_json_obj(raw)
+    if not data or not isinstance(data.get("groups"), list):
+        return {"ai_deduped": 0, "groups": 0, "candidates": len(pend), "ai_error": "parse_failed"}
+
+    conf_rank = {"high": 2, "medium": 1, "low": 0}
+    dismissed = 0
+    groups_applied = 0
+    for g in data["groups"]:
+        if not isinstance(g, dict):
+            continue
+        keep = g.get("keep")
+        merge = g.get("merge") or []
+        if not isinstance(merge, list):
+            continue
+        idxs = [j for j in merge if isinstance(j, int) and 0 <= j < len(pend) and j != keep]
+        if not idxs:
+            continue
+        member_idxs = idxs + ([keep] if isinstance(keep, int) and 0 <= keep < len(pend) else [])
+        # AI の keep を尊重。不正なときだけ、最も情報量の多い (信頼度→時刻あり→長い) 1件を残す
+        if isinstance(keep, int) and 0 <= keep < len(pend):
+            best = keep
+        else:
+            best = max(member_idxs, key=lambda j: (
+                conf_rank.get(pend[j].get("confidence", "medium"), 1),
+                1 if "T" in str(pend[j].get("start_iso", "")) else 0,
+                len(str(pend[j].get("title", ""))),
+            ))
+        groups_applied += 1
+        for j in member_idxs:
+            if j == best:
+                continue
+            it = pend[j]
+            append_jsonl(UNI_INBOX_FILE, {**it, "status": "dismissed",
+                                          "dismiss_reason": "ai-duplicate",
+                                          "updated_at": timestamp_jst()})
+            dismissed += 1
+    return {"ai_deduped": dismissed, "groups": groups_applied, "candidates": len(pend),
+            "engine_used": eng}
+
+
+def _collapse(use_ai: bool = True) -> dict:
+    """安全網の文字列 collapse → その上に AI 意味 collapse。AI 失敗時も文字列分は効く。"""
+    string_n = _collapse_near_dups()
+    if not use_ai:
+        return {"deduped": string_n, "ai_deduped": 0}
+    ai = _ai_collapse()
+    return {"deduped": string_n, **ai}
+
+
 @router.post("/uni-inbox/scan")
 def scan(req: ScanReq):
     """大学メールを抽出して未反映として登録。UI の『今すぐスキャン』と cron の両方から呼べる。"""
-    return _scan(req.days, req.max_per_slot, req.engine)
+    return _scan(req.days, req.max_per_slot, req.engine, ai_dedupe=req.ai_dedupe)
+
+
+class DedupeReq(BaseModel):
+    ai: bool = True
 
 
 @router.post("/uni-inbox/dedupe")
-def dedupe():
-    """pending の近似重複を畳む (手動)。散らかった状態の掃除に使う。token 不要 (dismiss と同格の可逆操作)。"""
-    n = _collapse_near_dups()
-    return {"ok": True, "deduped": n}
+def dedupe(req: DedupeReq | None = None):
+    """pending の重複を畳む (手動)。既定で AI 意味判定つき。token 不要 (dismiss と同格の可逆操作)。"""
+    use_ai = req.ai if req else True
+    out = _collapse(use_ai=use_ai)
+    return {"ok": True, **out}
 
 
 # ─── 一覧 / 件数 ────────────────────────────────────────────────────────────

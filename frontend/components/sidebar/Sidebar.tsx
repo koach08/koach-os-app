@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { DomainSelector } from "./DomainSelector";
 import type { Domain } from "@/lib/types";
 
@@ -56,6 +57,20 @@ const NAV_ITEMS = [
 
 export function Sidebar({ domain, onDomainChange, isOpen, onToggle }: Props) {
   const pathname = usePathname();
+  // 承認待ち (proposals) の未処理件数バッジ。溜まったら気づけるように。
+  const [pendingProposals, setPendingProposals] = useState(0);
+  // 大学メールの未反映件数バッジ。見落とさないように。
+  const [pendingUni, setPendingUni] = useState(0);
+  useEffect(() => {
+    fetch("/api/proposals/counts")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setPendingProposals(d?.pending ?? 0))
+      .catch(() => {});
+    fetch("/api/uni-inbox/counts")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setPendingUni(d?.pending ?? 0))
+      .catch(() => {});
+  }, [pathname]);
 
   return (
     <aside
@@ -99,7 +114,23 @@ export function Sidebar({ domain, onDomainChange, isOpen, onToggle }: Props) {
               }}
             >
               <span>{item.icon}</span>
-              <span>{item.label}</span>
+              <span className="flex-1">{item.label}</span>
+              {item.href === "/proposals" && pendingProposals > 0 && (
+                <span
+                  className="text-[10px] font-semibold rounded-full px-1.5 py-0.5 leading-none"
+                  style={{ background: "var(--color-accent)", color: "#fff", minWidth: "18px", textAlign: "center" }}
+                >
+                  {pendingProposals}
+                </span>
+              )}
+              {item.href === "/uni-inbox" && pendingUni > 0 && (
+                <span
+                  className="text-[10px] font-semibold rounded-full px-1.5 py-0.5 leading-none"
+                  style={{ background: "var(--color-accent)", color: "#fff", minWidth: "18px", textAlign: "center" }}
+                >
+                  {pendingUni}
+                </span>
+              )}
             </Link>
           );
         })}

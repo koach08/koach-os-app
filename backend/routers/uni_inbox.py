@@ -578,6 +578,19 @@ def dismiss(iid: str):
     return {"ok": True}
 
 
+@router.post("/uni-inbox/{iid}/restore")
+def restore(iid: str):
+    """dismissed (無視 / 重複判定) を pending に戻す。auto-dedup の誤判定を取り戻す安全弁。"""
+    st = _materialize()
+    item = st.get(iid)
+    if not item:
+        raise HTTPException(404, "item not found")
+    updated = {**item, "status": "pending", "dismiss_reason": "",
+               "restored_at": timestamp_jst(), "updated_at": timestamp_jst()}
+    append_jsonl(UNI_INBOX_FILE, updated)
+    return {"ok": True}
+
+
 class ReflectAllReq(BaseModel):
     min_confidence: str = "high"   # high のみ / medium で medium+high
 

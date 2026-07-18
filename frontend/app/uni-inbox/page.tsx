@@ -3,6 +3,7 @@
 /**
  * 🎓 大学メール受信箱 — hokudai/ac.jp 由来の予定・締切を「見落とさない」トラッカー。
  * スキャンで拾った項目は反映か無視をするまで pending で残る。1 タップでカレンダーへ。
+ * 自動 dedup が消した項目は「無視した項目」から戻せる (誤判定の安全弁)。
  */
 
 import { useEffect, useState } from "react";
@@ -19,6 +20,7 @@ type Item = {
   source_subject: string;
   source_from: string;
   status: string;
+  dismiss_reason?: string;
 };
 
 const TYPE_JA: Record<string, string> = {
@@ -32,6 +34,11 @@ const CONF_JA: Record<string, { label: string; color: string }> = {
   high: { label: "高信頼", color: "#10b981" },
   medium: { label: "要確認", color: "#f59e0b" },
   low: { label: "曖昧", color: "#64748b" },
+};
+
+const REASON_JA: Record<string, string> = {
+  "near-duplicate": "重複(自動)",
+  "ai-duplicate": "重複(AI)",
 };
 
 function fmtWhen(iso: string): string {
@@ -48,6 +55,10 @@ export default function UniInboxPage() {
   const [scanning, setScanning] = useState(false);
   const [msg, setMsg] = useState<string>("");
 
+  const [showDismissed, setShowDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState<Item[]>([]);
+  const [loadingDismissed, setLoadingDismissed] = useState(false);
+
   const load = () => {
     setLoading(true);
     fetch("/api/uni-inbox?status=pending")
@@ -59,10 +70,25 @@ export default function UniInboxPage() {
 
   useEffect(load, []);
 
+  const loadDismissed = () => {
+    setLoadingDismissed(true);
+    fetch("/api/uni-inbox?status=dismissed")
+      .then((r) => (r.ok ? r.json() : { items: [] }))
+      .then((d) => setDismissed(d.items ?? []))
+      .catch(() => setDismissed([]))
+      .finally(() => setLoadingDismissed(false));
+  };
+
+  const toggleDismissed = () => {
+    const next = !showDismissed;
+    setShowDismissed(next);
+    if (next) loadDismissed();
+  };
+
   const scan = async () => {
     if (scanning) return;
     setScanning(true);
-    setMsg("大学メールをスキャン中…（Gemini が抽出しています）");
+    setMsg("大学メールをスキャン中…（Gemini が抽出・重複整理しています）");
     try {
       const r = await fetch("/api/uni-inbox/scan", {
         method: "POST",
@@ -72,7 +98,7 @@ export default function UniInboxPage() {
       const d = await r.json();
       if (r.ok) {
         setMsg(
-          `スキャン完了: 新規 ${d.new_pending ?? 0} 件 / 既にカレンダー ${d.already_calendar ?? 0} 件 / 重複 ${d.duplicate ?? 0} 件（メール ${d.emails_scanned ?? 0} 通）`
+          `スキャン完了: 新規 ${d.new_pending ?? 0} 件 / 既にカレンダー ${d.already_calendar ?? 0} 件 / 重複整理 ${(d.deduped ?? 0) + (d.ai_deduped ?? 0)} 件（メール ${d.emails_scanned ?? 0} 通）`
         );
         load();
       } else {
@@ -80,6 +106,30 @@ export default function UniInboxPage() {
       }
     } catch (e) {
       setMsg(`スキャン失敗: ${e}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const dedupe = async () => {
+    if (scanning) return;
+    setScanning(true);
+    setMsg("重複を整理中…（AI が同じ予定をまとめています）");
+    try {
+      const r = await fetch("/api/uni-inbox/dedupe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ai: true }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setMsg(`重複を ${(d.deduped ?? 0) + (d.ai_deduped ?? 0)} 件まとめました。`);
+        load();
+      } else {
+        setMsg(`整理に失敗: ${d.detail ?? "unknown"}`);
+      }
+    } catch (e) {
+      setMsg(`整理に失敗: ${e}`);
     } finally {
       setScanning(false);
     }
@@ -93,6 +143,26 @@ export default function UniInboxPage() {
       if (r.ok) setItems((xs) => xs.filter((x) => x.id !== id));
     } catch {
       /* keep item; user can retry */
+    } finally {
+      setBusy((b) => {
+        const n = { ...b };
+        delete n[id];
+        return n;
+      });
+    }
+  };
+
+  const restore = async (id: string) => {
+    if (busy[id]) return;
+    setBusy((b) => ({ ...b, [id]: "restore" }));
+    try {
+      const r = await fetch(`/api/uni-inbox/${id}/restore`, { method: "POST" });
+      if (r.ok) {
+        setDismissed((xs) => xs.filter((x) => x.id !== id));
+        load();
+      }
+    } catch {
+      /* keep */
     } finally {
       setBusy((b) => {
         const n = { ...b };
@@ -138,6 +208,14 @@ export default function UniInboxPage() {
       <header className="space-y-3">
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <span>🎓</span> 大学メール
+          {!loading && items.length > 0 && (
+            <span
+              className="text-xs font-semibold px-2.5 py-0.5 rounded-full"
+              style={{ background: "var(--color-accent)", color: "#fff" }}
+            >
+              未反映 {items.length}
+            </span>
+          )}
         </h1>
         <p className="text-sm leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
           hokudai / ac.jp から来た予定・締切を拾って未反映として並べます。反映か無視をするまで残るので取りこぼしません。
@@ -160,6 +238,16 @@ export default function UniInboxPage() {
               style={{ background: "#10b981", color: "#fff" }}
             >
               ✓ 高信頼 {highCount} 件をまとめて反映
+            </button>
+          )}
+          {items.length > 1 && (
+            <button
+              onClick={dedupe}
+              disabled={scanning}
+              className="rounded-full px-5 py-2 text-sm disabled:opacity-40"
+              style={{ border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
+            >
+              🧹 重複を整理
             </button>
           )}
         </div>
@@ -248,6 +336,61 @@ export default function UniInboxPage() {
           })}
         </div>
       )}
+
+      {/* 無視した項目 — auto-dedup が消したものを見て戻せる */}
+      <section className="pt-2">
+        <button
+          onClick={toggleDismissed}
+          className="text-xs"
+          style={{ color: "var(--color-text-muted)" }}
+        >
+          {showDismissed ? "▼" : "▶"} 無視・重複整理した項目を{showDismissed ? "隠す" : "見る"}
+        </button>
+        {showDismissed && (
+          <div className="mt-3 space-y-2">
+            {loadingDismissed ? (
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>読み込み中...</p>
+            ) : dismissed.length === 0 ? (
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                無視した項目はありません。
+              </p>
+            ) : (
+              dismissed.map((it) => (
+                <div
+                  key={it.id}
+                  className="rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3"
+                  style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                      <span>{fmtWhen(it.start_iso)}</span>
+                      {it.dismiss_reason && REASON_JA[it.dismiss_reason] && (
+                        <span
+                          className="px-1.5 py-0.5 rounded-full"
+                          style={{ background: "var(--color-surface-hover)" }}
+                        >
+                          {REASON_JA[it.dismiss_reason]}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm truncate" style={{ color: "var(--color-text)" }}>
+                      {it.title}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => restore(it.id)}
+                    disabled={!!busy[it.id]}
+                    className="rounded-full px-3 py-1 text-xs shrink-0 disabled:opacity-40"
+                    style={{ border: "1px solid var(--color-border)", color: "var(--color-accent)" }}
+                  >
+                    {busy[it.id] === "restore" ? "戻し中..." : "↩ 戻す"}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </section>
     </main>
   );
 }

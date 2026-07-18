@@ -274,34 +274,58 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     }
 
 
+def _time_key(iso: str) -> str:
+    s = str(iso or "")
+    return s[11:16] if "T" in s else "allday"
+
+
+def _shares_run(a: str, b: str, n: int = 4) -> bool:
+    """a と b が長さ n 以上の共通部分文字列を持つか (同一イベントの別表記を検出)。"""
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < n:
+        return short in long and bool(short)
+    for i in range(len(short) - n + 1):
+        if short[i:i + n] in long:
+            return True
+    return False
+
+
 def _collapse_near_dups() -> int:
-    """pending のうち (日付, タイトル先頭) が同じ近似重複を畳む。信頼度が高い1件を残し他は dismiss。
-    抽出の揺れ (『(木村美玖)』vs『（木村美玖さん）』等) で増えた重複を掃除する。可逆 (dismissed に退避)。"""
+    """同一イベントが複数メールで別タイトル化した近似重複を畳む。可逆 (dismissed に退避)。
+
+    (日付, 時刻, 種別) が同じものだけを候補にし、タイトルが共通部分文字列を持つものを 1 件に統合。
+    時刻をキーに含めるので、科研費の同日別時刻 (15:00 ID取得 / 17:00 部局提出) など
+    別イベントは誤って畳まない。残すのは信頼度が高い 1 件。"""
     pend = [e for e in _materialize().values() if e.get("status") == "pending"]
     groups: dict[tuple, list] = {}
     for it in pend:
         day = str(it.get("start_iso", ""))[:10]
-        prefix = _norm(it.get("title", ""))[:16]
-        if not day or not prefix:
+        if not day:
             continue
-        groups.setdefault((day, prefix), []).append(it)
+        key = (day, _time_key(it.get("start_iso", "")), it.get("event_type", "default"))
+        groups.setdefault(key, []).append(it)
 
     conf_rank = {"high": 2, "medium": 1, "low": 0}
     collapsed = 0
     for group in groups.values():
         if len(group) < 2:
             continue
-        # 残す1件: 信頼度 高 > 時刻あり > 早く登録された順
+        # 信頼度 高 > 時刻あり > 早い順。上から代表を立て、共通部分文字列を持つ後続を畳む
         group.sort(key=lambda it: (
             conf_rank.get(it.get("confidence", "medium"), 1),
             1 if "T" in str(it.get("start_iso", "")) else 0,
             it.get("created_at", ""),
         ), reverse=True)
-        for it in group[1:]:
-            append_jsonl(UNI_INBOX_FILE, {**it, "status": "dismissed",
-                                          "dismiss_reason": "near-duplicate",
-                                          "updated_at": timestamp_jst()})
-            collapsed += 1
+        reps: list[str] = []
+        for it in group:
+            t = _norm(it.get("title", ""))
+            if any(_shares_run(rep, t) for rep in reps):
+                append_jsonl(UNI_INBOX_FILE, {**it, "status": "dismissed",
+                                              "dismiss_reason": "near-duplicate",
+                                              "updated_at": timestamp_jst()})
+                collapsed += 1
+            else:
+                reps.append(t)
     return collapsed
 
 

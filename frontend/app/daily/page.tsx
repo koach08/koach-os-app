@@ -41,6 +41,15 @@ type Completion = {
   completed_at: string;
 };
 
+type UniPending = {
+  id: string;
+  title: string;
+  start_iso: string;
+  event_type: string;
+  confidence: string;
+  day: string;
+};
+
 type DailyBrief = {
   generated_at: string;
   schedule: Event[];
@@ -52,6 +61,7 @@ type DailyBrief = {
   failures: Failure[];
   backlog?: BacklogItem[];
   completions_today?: Completion[];
+  uni_pending?: UniPending[];
   ai_brief: string;
   engine_used: string;
   model_used: string;
@@ -542,6 +552,54 @@ export default function DailyPage() {
                       );
                     })}
                   </ul>
+                </SectionCard>
+              )}
+
+              {/* 大学の未反映 (uni-inbox) — カレンダー未登録の締切・予定を朝ここでも見せる */}
+              {(data.uni_pending ?? []).length > 0 && (
+                <SectionCard
+                  emoji="🎓"
+                  title="大学の未反映（未登録の締切・予定）"
+                  count={(data.uni_pending ?? []).length}
+                  empty="未反映なし"
+                  isEmpty={false}
+                  badge="見落とし注意"
+                >
+                  <ul className="space-y-2">
+                    {(data.uni_pending ?? []).slice(0, 8).map((u) => {
+                      const tag =
+                        u.event_type === "deadline"
+                          ? { label: "締切", color: "#ef4444" }
+                          : u.event_type === "committee"
+                          ? { label: "委員会", color: "#8b5cf6" }
+                          : u.event_type === "meeting"
+                          ? { label: "会議", color: "#3b82f6" }
+                          : { label: "予定", color: "#71717a" };
+                      const when =
+                        u.day + (u.start_iso.includes("T") ? ` ${u.start_iso.slice(11, 16)}` : "");
+                      return (
+                        <li key={u.id} className="flex gap-2.5 items-center text-sm">
+                          <span
+                            className="font-mono text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                            style={{ background: `${tag.color}20`, color: tag.color, minWidth: "3rem", textAlign: "center" }}
+                          >
+                            {tag.label}
+                          </span>
+                          <span className="font-mono text-[11px] shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                            {when}
+                          </span>
+                          <span className="flex-1 truncate">{u.title}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <a
+                    href="/uni-inbox"
+                    className="inline-block mt-3 text-xs"
+                    style={{ color: "var(--color-accent)" }}
+                  >
+                    → 大学メールで反映・整理する
+                  </a>
                 </SectionCard>
               )}
 

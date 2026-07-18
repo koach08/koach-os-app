@@ -244,6 +244,36 @@ def daily_brief(
     except Exception:
         completions_today = []
 
+    # 8. 大学メールの未反映 (uni-inbox) — カレンダー未登録の締切・予定。朝ブリーフに含めて見落とし防止
+    try:
+        from routers.uni_inbox import _materialize as _uni_materialize
+        _today = now.strftime("%Y-%m-%d")
+        uni_pending = []
+        for it in _uni_materialize().values():
+            if it.get("status") != "pending":
+                continue
+            uni_pending.append({
+                "id": it.get("id", ""),
+                "title": it.get("title", ""),
+                "start_iso": it.get("start_iso", ""),
+                "event_type": it.get("event_type", "default"),
+                "confidence": it.get("confidence", "medium"),
+                "day": str(it.get("start_iso", ""))[:10],
+            })
+        uni_pending.sort(key=lambda x: x.get("start_iso", "") or "9999")
+    except Exception:
+        uni_pending = []
+        _today = now.strftime("%Y-%m-%d")
+
+    def _uni_line(u: dict) -> str:
+        d = u["day"] or "日付未定"
+        tm = (u["start_iso"][11:16] + " ") if "T" in u["start_iso"] else ""
+        tag = {"deadline": "〆", "committee": "委", "meeting": "会"}.get(u["event_type"], "・")
+        return f"- [{tag}] {d} {tm}{u['title'][:40]}"
+
+    upcoming_uni = [u for u in uni_pending if (u["day"] or "9999") >= _today]
+    uni_text = "\n".join(_uni_line(u) for u in upcoming_uni[:8]) if upcoming_uni else "(未反映なし)"
+
     # 5. AI問いかけ（L3介入相当：今日3つに絞れ）
     schedule_text = (
         "\n".join(
@@ -299,11 +329,15 @@ def daily_brief(
 ## Coach バックログ
 {backlog_text}
 
+## 大学の未反映（カレンダー未登録の締切・予定 / 見落とし注意）
+{uni_text}
+
 ## 今日すでに完了したこと
 {completion_text}
 
 ## 出力ルール
 - 予定とバックログを見て「今日この時間にこれをやる」を3つだけ提案する。時間帯（例: 10:00-11:30）を必ず添える
+- 大学の未反映に締切が近いものがあれば、今日やる3つ or 問いに必ず反映する（まだカレンダー未登録＝見落としやすい）
 - 予定の隙間時間を具体的にどう使うかブロックで示す
 - 直近の決定を1つだけリマインド（忘れがちなものを優先）
 - L3 介入レベル: 戦略的視点で1つ問いを立てる（「本当に必要？」など）
@@ -355,6 +389,7 @@ def daily_brief(
         "tasks": tasks,
         "backlog": backlog_items,
         "completions_today": completions_today,
+        "uni_pending": uni_pending,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

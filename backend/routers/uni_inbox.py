@@ -141,8 +141,13 @@ class ScanReq(BaseModel):
     engine: str = "gemini"
 
 
+# 「確実に大学から来ているもの」= 送信元が ac.jp のメールだけ。キーワード一致 (委員会/講義…)
+# は販促・ニュースまで拾ってノイズと抽出揺れの元になるので使わない。送信元限定で精度を上げる。
+UNI_SENDER_QUERY = "(from:ac.jp OR from:hokudai.ac.jp)"
+
+
 def _scan(days: int, max_per_slot: int, engine: str) -> dict:
-    from gcal import is_configured, list_recent_emails, _configured_slots, IMPORTANT_EMAIL_QUERY
+    from gcal import is_configured, list_recent_emails, _configured_slots
     from routers.gmail_calendar import _build_system_prompt, _process_batch, BATCH_SIZE
     from data_manager import now_jst as _now
     from router import DEFAULT_MODELS
@@ -150,7 +155,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     if not is_configured():
         raise HTTPException(400, "Google integration not configured")
 
-    # 大学 (ac.jp/hokudai) と大学キーワードで各アカウントを絞り込んで取得
+    # 送信元が大学 (ac.jp) のメールだけを各アカウントから取得
     emails: list[dict] = []
     seen_ids: set[str] = set()
     errors: list[str] = []
@@ -159,7 +164,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         try:
             got = list_recent_emails(
                 days=days, max_results=max_per_slot, slot=slot,
-                query_extra=IMPORTANT_EMAIL_QUERY,
+                query_extra=UNI_SENDER_QUERY,
             )
             for e in got:
                 eid = e.get("id", "")
@@ -325,25 +330,45 @@ def counts():
     return out
 
 
-@router.post("/uni-inbox/purge")
-def purge(
-    reset_processed: bool = Query(True, description="処理済みメールキャッシュも消して再取り込み可能にするか"),
-    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
-):
-    """メンテナンス用: 全トラッカー項目を tombstone で無効化。散らかった状態のリセットに使う。
-    token 必須。実 Calendar には触れない (作成済みイベントは残る)。"""
-    _check_token(x_cron_token)
+def _wipe(reset_processed: bool = True) -> int:
+    """全トラッカー項目を tombstone で無効化 + 処理済みキャッシュを truncate。返り値=消した件数。
+    実 Calendar には触れない (作成済みイベントは Google Calendar 側に残る)。"""
     live = _materialize()
     for iid in list(live.keys()):
         append_jsonl(UNI_INBOX_FILE, {"id": iid, "_deleted": True, "at": timestamp_jst()})
     if reset_processed:
-        # 抽出済みキャッシュ (source データではなく再構築可能) は truncate
         import json as _json
         with open(UNI_PROCESSED_FILE, "w", encoding="utf-8") as f:
             f.write(_json.dumps({"_schema": "uni_processed_emails", "_version": "2.0",
                                  "_description": "抽出済み Gmail メッセージ ID (再抽出防止キャッシュ)"},
                                 ensure_ascii=False) + "\n")
-    return {"ok": True, "tombstoned": len(live), "processed_reset": reset_processed}
+    return len(live)
+
+
+@router.post("/uni-inbox/purge")
+def purge(
+    reset_processed: bool = Query(True, description="処理済みメールキャッシュも消して再取り込み可能にするか"),
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    """メンテナンス用 (cron/token): 全トラッカー項目を tombstone で無効化。"""
+    _check_token(x_cron_token)
+    n = _wipe(reset_processed)
+    return {"ok": True, "tombstoned": n, "processed_reset": reset_processed}
+
+
+class RebuildReq(BaseModel):
+    days: int = 14
+    max_per_slot: int = 50
+
+
+@router.post("/uni-inbox/rebuild")
+def rebuild(req: RebuildReq):
+    """UI の『リセットして取り込み直す』用: 全消し → 大学メールを新規スキャン。
+    token 不要 (本人が UI から明示操作する scan/dismiss と同格)。実 Calendar には触れない。"""
+    tombstoned = _wipe(reset_processed=True)
+    result = _scan(req.days, req.max_per_slot, "gemini")
+    result["tombstoned"] = tombstoned
+    return result
 
 
 # ─── 反映 / 無視 ────────────────────────────────────────────────────────────

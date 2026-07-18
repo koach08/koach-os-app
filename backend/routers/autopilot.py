@@ -13,6 +13,8 @@ Autopilot — 24/7 自律プレップ (read-only + report)
 - 使える道具は【読み取り専用】のみ (web / 検索 / カレンダー閲覧 / 過去データ検索 / マルチモーダル解析)。
 - create_event / add_backlog / save_decision 等の【実データ書き込み】は一切与えない。
 - 成果物は memo (source=autopilot) に保存 + Resend メール (設定時のみ)。実データは変更しない。
+- 各 run は自分の結論を autopilot_state.jsonl (自分専用の progress artifact) に残し、次回はそれを読んで
+  続きから動く。これは autopilot 自身の作業台帳であり、decisions / calendar 等の実データではない。
 
 Auth: header `X-Cron-Token` が env CRON_TOKEN と一致しないと 401 (cron._check_token を再利用)。
 Model: コスト配慮でデフォルト claude-haiku-4-5 (email_watch の教訓)。query `model` で上書き可。
@@ -27,11 +29,13 @@ import urllib.request
 from fastapi import APIRouter, Header
 
 from data_manager import (
+    DATA_DIR,
     MEMOS_FILE,
     append_jsonl,
     generate_id,
     get_secret,
     now_jst,
+    read_jsonl,
     timestamp_jst,
 )
 from routers.cron import _check_token
@@ -66,6 +70,53 @@ AUTOPILOT_SYSTEM = _AGENT_SYSTEM + """
 - 最終出力は本人が後で読むレポート。結論から、箇条書き中心、200-500字程度。事実は道具で確認してから書く。
 - 最後に『次の一手』を 1 つだけ。
 """
+
+
+# ─── progress artifact (前回結論の state 化) ───
+# Anthropic の long-running agent harness の「progress artifact」パターン。
+# 各ジョブが自分の前回 run の結論を残し、次回はそれを読んで続きから動く (繰り返しを避け、前進を追う)。
+# append-only + job ごと latest-wins。read-only 方針は不変 (自分の作業台帳を持つだけ、実データは変えない)。
+
+AUTOPILOT_STATE_FILE = DATA_DIR / "autopilot_state.jsonl"
+
+
+def _load_prior_state(job: str) -> dict | None:
+    """直近の同ジョブ run の結論を返す。無ければ None。"""
+    latest = None
+    try:
+        for e in read_jsonl(AUTOPILOT_STATE_FILE):
+            if e.get("job") == job:
+                latest = e
+    except Exception:
+        return None
+    return latest
+
+
+def _save_state(job: str, report: str) -> None:
+    """今回の結論を progress artifact として残す。次回 run が読んで続きから動く。"""
+    try:
+        append_jsonl(AUTOPILOT_STATE_FILE, {
+            "job": job,
+            "date": now_jst().strftime("%Y-%m-%d"),
+            "at": now_jst().strftime("%m/%d %H:%M"),
+            "summary": (report or "")[:1500],
+            "created_at": timestamp_jst(),
+        })
+    except Exception:
+        pass
+
+
+def _prior_context_block(job: str) -> str:
+    """mission に差し込む『前回の結論』ブロック。初回や欠損時は空文字。"""
+    prior = _load_prior_state(job)
+    if not prior or not prior.get("summary", "").strip():
+        return ""
+    return (
+        f"\n\n## 前回 ({prior.get('at','')}) の自分自身の結論 (progress artifact)\n"
+        f"{prior['summary']}\n"
+        "→ 今回はこれを踏まえる。同じ話を繰り返さず、前進した点・変わった点・積み残しに触れる。"
+        "前回の『次の一手』が実行されたかも意識する。\n"
+    )
 
 
 def _run_readonly_agent(mission: str, max_steps: int = 5, model: str = DEFAULT_AUTOPILOT_MODEL) -> dict:
@@ -178,6 +229,7 @@ def _send_report_email(subject: str, text: str) -> bool:
 def _finish(job: str, title: str, out: dict) -> dict:
     text = out.get("final", "")
     memo_id = _save_report_memo(job, text)
+    _save_state(job, text)  # 次回 run が読む progress artifact を更新
     emailed = _send_report_email(f"🤖 Autopilot: {title} {now_jst().strftime('%m/%d')}", text)
     return {
         "job": job,
@@ -204,6 +256,7 @@ def _job_morning_prep(days_ahead: int, model: str) -> dict:
         "各予定について: 相手や議題が読み取れるものは search_my_data で過去の関連 memo/decision を確認し、"
         "必要なら web_search / web_fetch で最新の背景を調べ、準備すべき点を 1-2 個ずつ挙げる。"
         "予定が無ければ『予定なし。空き時間の使い道』を 1 つだけ提案する。"
+        + _prior_context_block("morning-prep")
     )
     return _finish("morning-prep", "朝の自律プレップ", _run_readonly_agent(mission, max_steps=6, model=model))
 
@@ -234,6 +287,7 @@ def _job_email_triage(days: int, limit: int, model: str) -> dict:
         "3 分類で整理: 【要対応 (締切/依頼)】【予定候補 (日時を含む)】【無視可】。"
         "各メールを 1 行で。相手の過去文脈が要るものは search_my_data で確認。"
         "最後に『今日まず着手すべき 1 通』を提案。"
+        + _prior_context_block("email-triage")
     )
     return _finish("email-triage", "メール自律トリアージ", _run_readonly_agent(mission, max_steps=5, model=model))
 
@@ -267,6 +321,7 @@ def _job_backlog_progress(max_items: int, model: str) -> dict:
         "全部やろうとせず、最も前進させやすい 1-2 件に集中。"
         "web_search / web_fetch で必要な情報を集め、次に本人がやる作業を 1-2 手まで具体化する "
         "(下書き文・箇条書き・参考リンク)。"
+        + _prior_context_block("backlog-progress")
     )
     return _finish("backlog-progress", "バックログ自律消化", _run_readonly_agent(mission, max_steps=6, model=model))
 
@@ -395,8 +450,13 @@ def _job_brain_health_check(
         "- 矛盾/陳腐化: どちらが正か、判断できなければ本人への確認質問を1つ\n"
         "実データへの書き込みはしない (提案のみ)。結論から。です/ます。抽象名詞「〜性」「重要性」禁止。"
         "一人称は「自分」。冒頭に issue 件数と、今週まず1件やるならどれかを書く。"
+        "前回の監査結論があれば、そこで挙げた issue が解消したか/積み残したかにも触れる。"
     )
-    refine_input = f"# 一次監査の issue 一覧\n{scan_out}\n\n# 元コーパス (参照用)\n{corpus[:60000]}"
+    refine_input = (
+        f"# 一次監査の issue 一覧\n{scan_out}\n\n"
+        f"# 元コーパス (参照用)\n{corpus[:60000]}"
+        + _prior_context_block("brain-health-check")
+    )
     try:
         refine_out = call_ai(
             messages=[{"role": "user", "content": refine_input}],
@@ -535,7 +595,11 @@ def _job_consolidate(
         "- decision(意思決定) か concept(概念まとめ) か failure(教訓) のどれとして残すべきか\n"
         "既存と重複するものは挙げない。お世辞は書かない。網羅より価値順。"
     )
-    scan_input = f"# 生シグナル\n{raw}\n\n# 既に構造化ずみ (これと重複するものは除外)\n{existing}"
+    scan_input = (
+        f"# 生シグナル\n{raw}\n\n"
+        f"# 既に構造化ずみ (これと重複するものは除外)\n{existing}"
+        + _prior_context_block("consolidate")
+    )
     try:
         scan_out = call_ai(
             messages=[{"role": "user", "content": scan_input}],

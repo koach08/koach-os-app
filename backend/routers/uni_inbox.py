@@ -86,6 +86,22 @@ def _fetch_calendar_titles(days_ahead: int = 60) -> list[tuple[str, str]]:
         return []
 
 
+# Koach OS 自身が送る通知メール (自己参照ループの元) を見分けるマーカー
+_SELF_FROM_MARKERS = ("resend.dev", "koach os", "koach-os")
+_SELF_SUBJECT_MARKERS = (
+    "daily brief", "autopilot", "翌日スケジュール", "大学メール 未反映",
+    "脳の週次", "知識の構造化",
+)
+
+
+def _is_self_notification(e: dict) -> bool:
+    frm = str(e.get("from", "")).lower()
+    if any(m in frm for m in _SELF_FROM_MARKERS):
+        return True
+    subj = str(e.get("subject", "")).lower()
+    return any(m in subj for m in _SELF_SUBJECT_MARKERS)
+
+
 def _already_in_calendar(p: dict, cal: list[tuple[str, str]]) -> bool:
     """同じ日付で、タイトルが一方に含まれていれば「既にある」とみなす (ゆるめ)。"""
     day = str(p.get("start_iso", ""))[:10]
@@ -122,6 +138,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     emails: list[dict] = []
     seen_ids: set[str] = set()
     errors: list[str] = []
+    self_skipped = 0
     for slot in _configured_slots():
         try:
             got = list_recent_emails(
@@ -134,6 +151,11 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
                     continue
                 if eid:
                     seen_ids.add(eid)
+                # Koach OS 自身の通知メール (Daily Brief / Autopilot 等) を除外。
+                # キーワード一致で自分の生成物を「大学予定」として再取り込みするのを防ぐ。
+                if _is_self_notification(e):
+                    self_skipped += 1
+                    continue
                 emails.append(e)
         except Exception as ex:
             errors.append(f"slot {slot}: {ex}")
@@ -199,6 +221,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
 
     return {
         "emails_scanned": len(emails),
+        "self_skipped": self_skipped,
         "extracted": len(proposals),
         "new_pending": new_pending,
         "already_calendar": already_cal,

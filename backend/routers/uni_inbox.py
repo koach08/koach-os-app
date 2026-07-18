@@ -243,6 +243,9 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         else:
             new_pending += 1
 
+    # 抽出は非決定的なので、万一 pending に近似重複が残っても末尾で畳む (自己浄化)
+    collapsed = _collapse_near_dups()
+
     return {
         "emails_scanned": len(emails),
         "fresh_emails": len(fresh),
@@ -251,15 +254,54 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         "new_pending": new_pending,
         "already_calendar": already_cal,
         "duplicate": duplicate,
+        "deduped": collapsed,
         "engine_used": eng,
         "errors": errors,
     }
+
+
+def _collapse_near_dups() -> int:
+    """pending のうち (日付, タイトル先頭) が同じ近似重複を畳む。信頼度が高い1件を残し他は dismiss。
+    抽出の揺れ (『(木村美玖)』vs『（木村美玖さん）』等) で増えた重複を掃除する。可逆 (dismissed に退避)。"""
+    pend = [e for e in _materialize().values() if e.get("status") == "pending"]
+    groups: dict[tuple, list] = {}
+    for it in pend:
+        day = str(it.get("start_iso", ""))[:10]
+        prefix = _norm(it.get("title", ""))[:16]
+        if not day or not prefix:
+            continue
+        groups.setdefault((day, prefix), []).append(it)
+
+    conf_rank = {"high": 2, "medium": 1, "low": 0}
+    collapsed = 0
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        # 残す1件: 信頼度 高 > 時刻あり > 早く登録された順
+        group.sort(key=lambda it: (
+            conf_rank.get(it.get("confidence", "medium"), 1),
+            1 if "T" in str(it.get("start_iso", "")) else 0,
+            it.get("created_at", ""),
+        ), reverse=True)
+        for it in group[1:]:
+            append_jsonl(UNI_INBOX_FILE, {**it, "status": "dismissed",
+                                          "dismiss_reason": "near-duplicate",
+                                          "updated_at": timestamp_jst()})
+            collapsed += 1
+    return collapsed
 
 
 @router.post("/uni-inbox/scan")
 def scan(req: ScanReq):
     """大学メールを抽出して未反映として登録。UI の『今すぐスキャン』と cron の両方から呼べる。"""
     return _scan(req.days, req.max_per_slot, req.engine)
+
+
+@router.post("/uni-inbox/dedupe")
+def dedupe():
+    """pending の近似重複を畳む (手動)。散らかった状態の掃除に使う。token 不要 (dismiss と同格の可逆操作)。"""
+    n = _collapse_near_dups()
+    return {"ok": True, "deduped": n}
 
 
 # ─── 一覧 / 件数 ────────────────────────────────────────────────────────────

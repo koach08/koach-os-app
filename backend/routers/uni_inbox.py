@@ -39,6 +39,22 @@ router = APIRouter()
 UNI_INBOX_FILE = DATA_DIR / "uni_inbox.jsonl"
 init_jsonl(UNI_INBOX_FILE, "uni_inbox", "大学メール由来の予定・締切トラッカー (pending→calendared|dismissed)")
 
+# 処理済みメール ID。抽出は非決定的 (毎回わずかに違うタイトル/日付) なので、同じメールを
+# 二度抽出すると近似重複が無限に増える。メールは一度だけ抽出する = process-once の鍵。
+UNI_PROCESSED_FILE = DATA_DIR / "uni_processed_emails.jsonl"
+init_jsonl(UNI_PROCESSED_FILE, "uni_processed_emails", "抽出済み Gmail メッセージ ID (再抽出防止キャッシュ)")
+
+
+def _processed_ids() -> set[str]:
+    return {str(e.get("email_id", "")) for e in read_jsonl(UNI_PROCESSED_FILE) if e.get("email_id")}
+
+
+def _mark_processed(email_ids: list[str]) -> None:
+    ts = timestamp_jst()
+    for eid in email_ids:
+        if eid:
+            append_jsonl(UNI_PROCESSED_FILE, {"email_id": eid, "at": ts})
+
 
 # ─── 状態管理 (latest-wins) ─────────────────────────────────────────────────
 def _materialize() -> dict[str, dict]:
@@ -160,9 +176,14 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         except Exception as ex:
             errors.append(f"slot {slot}: {ex}")
 
-    if not emails:
-        return {"emails_scanned": 0, "extracted": 0, "new_pending": 0,
-                "already_calendar": 0, "duplicate": 0, "errors": errors}
+    # process-once: 既に抽出したメールは二度と抽出しない (近似重複の無限増殖を防ぐ)
+    processed = _processed_ids()
+    fresh = [e for e in emails if e.get("id", "") not in processed]
+
+    if not fresh:
+        return {"emails_scanned": len(emails), "fresh_emails": 0, "self_skipped": self_skipped,
+                "extracted": 0, "new_pending": 0, "already_calendar": 0, "duplicate": 0,
+                "errors": errors, "note": "新規メールなし (全て抽出済み)"}
 
     today_str = _now().strftime("%Y-%m-%d (%A)")
     system_prompt = _build_system_prompt(today_str)
@@ -170,13 +191,16 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     model = DEFAULT_MODELS.get(eng, DEFAULT_MODELS["gemini"])
 
     proposals: list[dict] = []
-    for i in range(0, len(emails), BATCH_SIZE):
-        batch = emails[i:i + BATCH_SIZE]
+    for i in range(0, len(fresh), BATCH_SIZE):
+        batch = fresh[i:i + BATCH_SIZE]
         props, _err, _preview = _process_batch(batch, system_prompt, eng, model)
         proposals.extend(props)
 
+    # 抽出したメールは (イベントが 0 件でも) 処理済みにして再抽出しない
+    _mark_processed([e.get("id", "") for e in fresh])
+
     # 送信元を引けるように email_id → from を持っておく
-    from_by_id = {e.get("id", ""): e.get("from", "") for e in emails}
+    from_by_id = {e.get("id", ""): e.get("from", "") for e in fresh}
 
     cal = _fetch_calendar_titles(days_ahead=90)
     existing = _existing_keys()
@@ -221,6 +245,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
 
     return {
         "emails_scanned": len(emails),
+        "fresh_emails": len(fresh),
         "self_skipped": self_skipped,
         "extracted": len(proposals),
         "new_pending": new_pending,
@@ -256,6 +281,27 @@ def counts():
         if s in out:
             out[s] += 1
     return out
+
+
+@router.post("/uni-inbox/purge")
+def purge(
+    reset_processed: bool = Query(True, description="処理済みメールキャッシュも消して再取り込み可能にするか"),
+    x_cron_token: str | None = Header(None, alias="X-Cron-Token"),
+):
+    """メンテナンス用: 全トラッカー項目を tombstone で無効化。散らかった状態のリセットに使う。
+    token 必須。実 Calendar には触れない (作成済みイベントは残る)。"""
+    _check_token(x_cron_token)
+    live = _materialize()
+    for iid in list(live.keys()):
+        append_jsonl(UNI_INBOX_FILE, {"id": iid, "_deleted": True, "at": timestamp_jst()})
+    if reset_processed:
+        # 抽出済みキャッシュ (source データではなく再構築可能) は truncate
+        import json as _json
+        with open(UNI_PROCESSED_FILE, "w", encoding="utf-8") as f:
+            f.write(_json.dumps({"_schema": "uni_processed_emails", "_version": "2.0",
+                                 "_description": "抽出済み Gmail メッセージ ID (再抽出防止キャッシュ)"},
+                                ensure_ascii=False) + "\n")
+    return {"ok": True, "tombstoned": len(live), "processed_reset": reset_processed}
 
 
 # ─── 反映 / 無視 ────────────────────────────────────────────────────────────

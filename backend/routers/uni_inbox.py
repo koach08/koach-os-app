@@ -196,13 +196,21 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     model = DEFAULT_MODELS.get(eng, DEFAULT_MODELS["gemini"])
 
     proposals: list[dict] = []
+    processed_ok: list[str] = []
+    ai_failures = 0
     for i in range(0, len(fresh), BATCH_SIZE):
         batch = fresh[i:i + BATCH_SIZE]
-        props, _err, _preview = _process_batch(batch, system_prompt, eng, model)
+        props, err, _preview = _process_batch(batch, system_prompt, eng, model)
         proposals.extend(props)
+        # AI 呼び出し自体が失敗したバッチは処理済みにしない → 次回リトライ (取りこぼし防止)。
+        # JSON パース失敗 (recovered_partial 等) は抽出は走ったので処理済みにする。
+        if err and str(err).startswith("AI call failed"):
+            ai_failures += 1
+            continue
+        processed_ok.extend(e.get("id", "") for e in batch)
 
-    # 抽出したメールは (イベントが 0 件でも) 処理済みにして再抽出しない
-    _mark_processed([e.get("id", "") for e in fresh])
+    # 抽出が成功したメールだけ処理済みに (イベント0件でもOK)
+    _mark_processed(processed_ok)
 
     # 送信元を引けるように email_id → from を持っておく
     from_by_id = {e.get("id", ""): e.get("from", "") for e in fresh}
@@ -260,6 +268,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         "already_calendar": already_cal,
         "duplicate": duplicate,
         "deduped": collapsed,
+        "ai_failures": ai_failures,
         "engine_used": eng,
         "errors": errors,
     }

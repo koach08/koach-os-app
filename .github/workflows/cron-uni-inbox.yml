@@ -1,0 +1,35 @@
+name: University Inbox (毎朝・大学メール反映リマインド)
+
+on:
+  schedule:
+    # 21:30 UTC = 06:30 JST 毎日 — 朝プレップより前に大学メールをスキャンし、未反映があれば通知
+    - cron: "30 21 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  uni-inbox-remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan university mail and remind if pending
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$BACKEND_URL" ] || [ -z "$CRON_TOKEN" ]; then
+            echo "::error::BACKEND_URL or CRON_TOKEN secret is missing"
+            exit 1
+          fi
+          # remind は内部で先にスキャン (auto_scan=true)。Gemini 抽出があるため max-time は長め
+          for attempt in 1 2 3; do
+            if curl -fsSL -X POST "$BACKEND_URL/api/uni-inbox/remind?auto_scan=true&days=7" \
+              -H "X-Cron-Token: $CRON_TOKEN" \
+              -H "Content-Type: application/json" \
+              --max-time 300 \
+              -w "\nHTTP %{http_code}\n"; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::uni-inbox remind failed after 3 attempts"
+          exit 1

@@ -27,6 +27,7 @@ const NAV_ITEMS = [
   { href: "/worklog", label: "実績ログ", icon: "📒" },
   { href: "/proposals", label: "承認待ち", icon: "📥" },
   { href: "/routines", label: "ルーティン", icon: "🔁" },
+  { href: "/uni-inbox", label: "大学メール", icon: "🎓" },
   { href: "/gmail-sync", label: "予定を追加", icon: "📅" },
   { href: "/documents", label: "Docs→Tasks", icon: "📄" },
   { href: "/training", label: "Training", icon: "💪" },

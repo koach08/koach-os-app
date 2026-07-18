@@ -160,7 +160,7 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
     existing = _existing_keys()
 
     new_pending = already_cal = duplicate = 0
-    for p in proposals:
+    for idx, p in enumerate(proposals):
         if not p.get("title") or not p.get("start_iso"):
             continue
         key = _dedup_key(p)
@@ -170,8 +170,11 @@ def _scan(days: int, max_per_slot: int, engine: str) -> dict:
         existing.add(key)
 
         in_cal = _already_in_calendar(p, cal)
+        # generate_id は秒解像度で、同一スキャン内の連続 append が衝突する。
+        # マイクロ秒 + index で一意化 (latest-wins で潰れないように)。
+        uid = f"uni_{now_jst().strftime('%Y%m%d_%H%M%S_%f')}_{idx}"
         item = {
-            "id": generate_id("uni"),
+            "id": uid,
             "dedup_key": key,
             "title": str(p.get("title", ""))[:200],
             "start_iso": str(p.get("start_iso", "")),

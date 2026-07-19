@@ -17,6 +17,7 @@ from data_manager import (
     DECISIONS_FILE,
     FAILURES_FILE,
     TASKS_FILE,
+    MEMOS_FILE,
     DATA_DIR,
     now_jst,
 )
@@ -129,6 +130,74 @@ def _recent_failures(limit: int = 2) -> list[dict]:
         }
         for f in reversed(failures[-limit:])
     ]
+
+
+def _autopilot_today(today: str) -> list[dict]:
+    """今朝の autopilot 結論を job ごと最新で返す。裏で集めた結論を朝ブリーフに束ねる (情報サイロ解消)。"""
+    latest: dict[str, dict] = {}
+    for m in read_jsonl(MEMOS_FILE):
+        if m.get("source") != "autopilot":
+            continue
+        if str(m.get("created_at", ""))[:10] != today:
+            continue
+        job = m.get("autopilot_job", "autopilot")
+        latest[job] = m  # 追記順＝新しいものが後 → job ごと最新が残る
+    JOB_JA = {"morning-prep": "朝の準備", "email-triage": "メール", "backlog-progress": "積み残し"}
+    out = []
+    for job, m in latest.items():
+        body = str(m.get("content", ""))
+        # 先頭の "🤖 [autopilot:job] mm/dd HH:MM\n\n" ヘッダを落とし本文だけに
+        if "\n\n" in body:
+            body = body.split("\n\n", 1)[1]
+        out.append({
+            "job": job,
+            "label": JOB_JA.get(job, job),
+            "summary": body.strip()[:500],
+            "at": str(m.get("created_at", ""))[11:16],
+        })
+    # 表示順: 朝の準備 → メール → 積み残し
+    order = {"morning-prep": 0, "email-triage": 1, "backlog-progress": 2}
+    out.sort(key=lambda x: order.get(x["job"], 9))
+    return out
+
+
+def _proposals_pending() -> list[dict]:
+    """承認待ちの構造化下書き。朝に「決めるだけ」で片付く昇格候補を見せる。"""
+    try:
+        from routers.proposals import _materialize
+    except Exception:
+        return []
+    out = []
+    for p in _materialize().values():
+        if p.get("status") != "pending":
+            continue
+        out.append({
+            "id": p.get("id", ""),
+            "title": p.get("title", "")[:80],
+            "kind": p.get("kind", "decision"),
+            "domain": p.get("domain", "personal"),
+        })
+    return out
+
+
+def _email_pending(limit: int = 4) -> list[dict]:
+    """対応待ちメール (snooze/返信済み除外)。ネットワーク無し、保存済み状態を読むだけ。"""
+    try:
+        from routers.email_watch import list_pending
+        data = list_pending()
+    except Exception:
+        return []
+    items = data.get("items", []) if isinstance(data, dict) else []
+    out = []
+    for it in items[:limit]:
+        out.append({
+            "id": it.get("id", ""),
+            "subject": str(it.get("subject", ""))[:70],
+            "from": str(it.get("from", ""))[:50],
+            "urgency": it.get("urgency", "medium"),
+            "days": it.get("days_since_received", 0),
+        })
+    return out, len(items)
 
 
 DAILY_BRIEF_CACHE = DATA_DIR / "daily_brief_cache.json"
@@ -274,6 +343,31 @@ def daily_brief(
     upcoming_uni = [u for u in uni_pending if (u["day"] or "9999") >= _today]
     uni_text = "\n".join(_uni_line(u) for u in upcoming_uni[:8]) if upcoming_uni else "(未反映なし)"
 
+    # 9. 裏で集めた結論を朝に束ねる (司令塔化) — autopilot / 承認待ち / 対応待ちメール
+    today_str2 = now.strftime("%Y-%m-%d")
+    autopilot_reports = _autopilot_today(today_str2)
+    proposals_pending = _proposals_pending()
+    email_pending, email_pending_total = _email_pending(limit=4)
+
+    autopilot_text = (
+        "\n\n".join(f"### {r['label']} ({r['at']})\n{r['summary']}" for r in autopilot_reports)
+        if autopilot_reports
+        else "(今朝の自動調査なし)"
+    )
+    proposals_text = (
+        "\n".join(f"- [{p['kind']}/{p['domain']}] {p['title']}" for p in proposals_pending[:6])
+        if proposals_pending
+        else "(承認待ちなし)"
+    )
+    email_pending_text = (
+        "\n".join(
+            f"- [{e['urgency']}] {e['from']}: {e['subject']} ({e['days']}日経過)"
+            for e in email_pending
+        )
+        if email_pending
+        else "(対応待ちメールなし)"
+    )
+
     # 5. AI問いかけ（L3介入相当：今日3つに絞れ）
     schedule_text = (
         "\n".join(
@@ -332,12 +426,22 @@ def daily_brief(
 ## 大学の未反映（カレンダー未登録の締切・予定 / 見落とし注意）
 {uni_text}
 
+## 今朝わたし(autopilot)が裏で調べた結論（再調査せず、ここを起点に）
+{autopilot_text}
+
+## 対応待ちメール（返信・処理が止まっている / 全{email_pending_total}件）
+{email_pending_text}
+
+## 承認待ちの下書き（決めるだけで片付く昇格候補）
+{proposals_text}
+
 ## 今日すでに完了したこと
 {completion_text}
 
 ## 出力ルール
 - 予定とバックログを見て「今日この時間にこれをやる」を3つだけ提案する。時間帯（例: 10:00-11:30）を必ず添える
-- 大学の未反映に締切が近いものがあれば、今日やる3つ or 問いに必ず反映する（まだカレンダー未登録＝見落としやすい）
+- 今朝の autopilot 結論は既に調べ済み。同じ調査を繰り返さず、その結論を前提に今日の一手へ繋げる
+- 大学の未反映に締切が近いもの / 数日止まっている対応待ちメールがあれば、今日やる3つ or 問いに必ず反映する
 - 予定の隙間時間を具体的にどう使うかブロックで示す
 - 直近の決定を1つだけリマインド（忘れがちなものを優先）
 - L3 介入レベル: 戦略的視点で1つ問いを立てる（「本当に必要？」など）
@@ -390,6 +494,10 @@ def daily_brief(
         "backlog": backlog_items,
         "completions_today": completions_today,
         "uni_pending": uni_pending,
+        "autopilot_reports": autopilot_reports,
+        "proposals_pending": proposals_pending,
+        "email_pending": email_pending,
+        "email_pending_total": email_pending_total,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

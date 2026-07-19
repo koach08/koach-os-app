@@ -180,13 +180,14 @@ def _proposals_pending() -> list[dict]:
     return out
 
 
-def _email_pending(limit: int = 4) -> list[dict]:
+def _email_pending(limit: int = 4) -> tuple[list[dict], int]:
     """対応待ちメール (snooze/返信済み除外)。ネットワーク無し、保存済み状態を読むだけ。"""
     try:
+        # 明示引数で呼ぶ (route を素で呼ぶと Query() 既定が FieldInfo になり内部で落ちる)
         from routers.email_watch import list_pending
-        data = list_pending()
+        data = list_pending(overdue_only=False, overdue_days=2)
     except Exception:
-        return []
+        return [], 0
     items = data.get("items", []) if isinstance(data, dict) else []
     out = []
     for it in items[:limit]:

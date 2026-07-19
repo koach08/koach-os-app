@@ -50,6 +50,10 @@ type UniPending = {
   day: string;
 };
 
+type AutopilotReport = { job: string; label: string; summary: string; at: string };
+type ProposalPending = { id: string; title: string; kind: string; domain: string };
+type EmailPending = { id: string; subject: string; from: string; urgency: string; days: number };
+
 type DailyBrief = {
   generated_at: string;
   schedule: Event[];
@@ -62,6 +66,10 @@ type DailyBrief = {
   backlog?: BacklogItem[];
   completions_today?: Completion[];
   uni_pending?: UniPending[];
+  autopilot_reports?: AutopilotReport[];
+  proposals_pending?: ProposalPending[];
+  email_pending?: EmailPending[];
+  email_pending_total?: number;
   ai_brief: string;
   engine_used: string;
   model_used: string;
@@ -599,6 +607,108 @@ export default function DailyPage() {
                     style={{ color: "var(--color-accent)" }}
                   >
                     → 大学メールで反映・整理する
+                  </a>
+                </SectionCard>
+              )}
+
+              {/* 🤖 autopilot が今朝すでに調べた結論 — 裏で集めた結論を朝ここに束ねる (司令塔化) */}
+              {(data.autopilot_reports ?? []).length > 0 && (
+                <SectionCard
+                  emoji="🤖"
+                  title="今朝わたしが裏で調べたこと"
+                  count={(data.autopilot_reports ?? []).length}
+                  empty="今朝の自動調査なし"
+                  isEmpty={false}
+                  badge="autopilot"
+                >
+                  <div className="space-y-3">
+                    {(data.autopilot_reports ?? []).map((r) => (
+                      <div key={r.job}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span
+                            className="font-mono text-[10px] px-1.5 py-0.5 rounded"
+                            style={{ background: "rgba(59,130,246,0.14)", color: "#3b82f6" }}
+                          >
+                            {r.label}
+                          </span>
+                          <span className="font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                            {r.at}
+                          </span>
+                        </div>
+                        <p
+                          className="text-[13px] leading-relaxed whitespace-pre-wrap"
+                          style={{ color: "var(--color-text-muted)" }}
+                        >
+                          {r.summary}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </SectionCard>
+              )}
+
+              {/* 📧 対応待ちメール — 返信/処理が止まっているものを朝に束ねる */}
+              {(data.email_pending ?? []).length > 0 && (
+                <SectionCard
+                  emoji="📧"
+                  title="対応待ちメール"
+                  count={data.email_pending_total ?? (data.email_pending ?? []).length}
+                  empty="対応待ちなし"
+                  isEmpty={false}
+                  badge="返信が止まっている"
+                >
+                  <ul className="space-y-2">
+                    {(data.email_pending ?? []).map((e) => {
+                      const color =
+                        e.urgency === "high" ? "#ef4444" : e.urgency === "low" ? "#71717a" : "#f59e0b";
+                      return (
+                        <li key={e.id} className="flex gap-2.5 items-center text-sm">
+                          <span
+                            className="font-mono text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                            style={{ background: `${color}20`, color, minWidth: "2.5rem", textAlign: "center" }}
+                          >
+                            {e.days}日
+                          </span>
+                          <span className="flex-1 truncate">
+                            <span style={{ color: "var(--color-text-muted)" }}>{e.from}</span>
+                            {" — "}
+                            {e.subject}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <a href="/email-watch" className="inline-block mt-3 text-xs" style={{ color: "var(--color-accent)" }}>
+                    → 対応待ちメールを処理する
+                  </a>
+                </SectionCard>
+              )}
+
+              {/* 📥 承認待ちの下書き — 決めるだけで片付く昇格候補を朝に束ねる */}
+              {(data.proposals_pending ?? []).length > 0 && (
+                <SectionCard
+                  emoji="📥"
+                  title="承認待ちの下書き"
+                  count={(data.proposals_pending ?? []).length}
+                  empty="承認待ちなし"
+                  isEmpty={false}
+                  badge="決めるだけ"
+                >
+                  <ul className="space-y-2">
+                    {(data.proposals_pending ?? []).slice(0, 6).map((p) => (
+                      <li key={p.id} className="flex gap-2.5 items-center text-sm">
+                        <span
+                          className="font-mono text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                          style={{ background: "rgba(139,92,246,0.14)", color: "#8b5cf6" }}
+                        >
+                          {p.kind}
+                        </span>
+                        <span className="flex-1 truncate">{p.title}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <a href="/proposals" className="inline-block mt-3 text-xs" style={{ color: "var(--color-accent)" }}>
+                    → 承認して定着させる
                   </a>
                 </SectionCard>
               )}

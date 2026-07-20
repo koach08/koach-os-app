@@ -79,16 +79,19 @@ export function Sidebar({ domain, onDomainChange, isOpen, onToggle }: Props) {
         width: isOpen ? "260px" : "0px",
         background: "var(--color-surface)",
         borderRight: "1px solid var(--color-border)",
+        // iOS PWA: ヘッダ/下部がノッチ・ホームバーに潜らないよう safe-area 分空ける
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
       }}
     >
       {/* Header */}
       <div className="p-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--color-border)" }}>
-        <div>
+        <Link href="/" className="hover:opacity-80">
           <h2 className="font-bold text-lg">Koach OS</h2>
-          <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>v2 — SRAP</p>
-        </div>
-        <button onClick={onToggle} className="p-1 rounded hover:bg-[var(--color-surface-hover)]">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>v2 — SRAP · タップでトップ</p>
+        </Link>
+        <button onClick={onToggle} aria-label="メニューを閉じる" className="p-2 rounded hover:bg-[var(--color-surface-hover)]">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>

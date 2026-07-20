@@ -1,4 +1,4 @@
-const CACHE = "koach-os-shell-v1";
+const CACHE = "koach-os-shell-v2";
 const SHELL = ["/", "/daily", "/evening", "/focus", "/manifest.json"];
 
 self.addEventListener("install", (e) => {

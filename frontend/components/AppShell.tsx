@@ -53,19 +53,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* サイドバーを開くハンバーガー — 閉じている間だけ表示 (畳むと開けなくなる問題も解消) */}
+      {/* サイドバーを開くハンバーガー — 閉じている間だけ表示。
+          iOS PWA(standalone)ではステータスバー下に潜って押せなくなるので safe-area 分だけ下げる */}
       {!sidebarOpen && (
         <button
           onClick={() => setSidebarOpen(true)}
           aria-label="メニューを開く"
-          className="fixed top-3 left-3 z-50 rounded-lg p-2 shadow-sm"
+          className="fixed z-50 rounded-lg p-2.5 shadow-md"
           style={{
+            top: "calc(env(safe-area-inset-top, 0px) + 10px)",
+            left: "calc(env(safe-area-inset-left, 0px) + 10px)",
             background: "var(--color-surface)",
             border: "1px solid var(--color-border)",
             color: "var(--color-text)",
           }}
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M3 6h18M3 12h18M3 18h18" />
           </svg>
         </button>

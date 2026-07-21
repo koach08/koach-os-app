@@ -9,12 +9,23 @@ GET /api/balance — カテゴリ別バランスチェック。
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Query
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from data_manager import now_jst
 
 router = APIRouter()
+
+_JST = timezone(timedelta(hours=9))
+
+# 保護ブロックの既定候補 (JST 時刻, 分)。上から順に空きを探す。
+# family=夕方/週末昼、health=朝/夕方。title の keyword は _guess_category が拾える語に合わせる
+# (確保後は次回の balance でそのカテゴリの実績として計上される＝ループが閉じる)。
+PROTECT_DEFAULTS = {
+    "family": {"label": "家族", "title": "家族の時間", "slots": [("18:00", 90), ("10:00", 120), ("19:30", 90)]},
+    "health": {"label": "健康", "title": "運動・トレーニング", "slots": [("07:00", 60), ("17:00", 60), ("21:00", 45)]},
+}
 
 
 CATEGORY_KEYWORDS = {
@@ -35,6 +46,69 @@ def _guess_category(title: str) -> str:
         if any(kw in t for kw in kws):
             return cat
     return "other"
+
+
+def _parse_dt(iso: str):
+    """タイムゾーン付き ISO を aware datetime に。終日 (YYYY-MM-DD) や失敗は None。"""
+    if not iso or len(iso) <= 10:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _busy_intervals(events: list[dict]) -> list[tuple[datetime, datetime]]:
+    """時刻ありイベントの [開始, 終了] 区間。終日イベントは特定時刻を塞がない扱いで除外。"""
+    out: list[tuple[datetime, datetime]] = []
+    for ev in events:
+        s = _parse_dt(ev.get("start_iso", ""))
+        e = _parse_dt(ev.get("end_iso", ""))
+        if s and e and e > s:
+            out.append((s.astimezone(_JST), e.astimezone(_JST)))
+    return out
+
+
+def _is_free(s: datetime, e: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
+    return not any(s < b_e and e > b_s for (b_s, b_e) in busy)
+
+
+def _protect_proposals(deficit_cats: list[str], now: datetime,
+                       busy: list[tuple[datetime, datetime]]) -> list[dict]:
+    """不足カテゴリごとに、今後 5 日の空き枠から具体ブロックを 1 つ提案する (承認制・書込なし)。"""
+    proposals: list[dict] = []
+    for cat in deficit_cats:
+        spec = PROTECT_DEFAULTS.get(cat)
+        if not spec:
+            continue
+        found = None
+        # 翌日から 5 日先まで走査。family は週末(土日)を優先的に先へ。
+        day_offsets = list(range(1, 6))
+        if cat == "family":
+            day_offsets.sort(key=lambda d: (now + timedelta(days=d)).weekday() < 5)
+        for off in day_offsets:
+            day = (now + timedelta(days=off)).date()
+            for hhmm, dur in spec["slots"]:
+                h, m = map(int, hhmm.split(":"))
+                s = datetime(day.year, day.month, day.day, h, m, tzinfo=_JST)
+                e = s + timedelta(minutes=dur)
+                if _is_free(s, e, busy):
+                    found = (s, e)
+                    break
+            if found:
+                break
+        if found:
+            s, e = found
+            proposals.append({
+                "id": f"protect_{cat}_{s.strftime('%Y%m%dT%H%M')}",
+                "category": cat,
+                "label": spec["label"],
+                "title": spec["title"],
+                "start_iso": s.isoformat(),
+                "end_iso": e.isoformat(),
+                "when_text": s.strftime("%m/%d(%a) %H:%M") + "-" + e.strftime("%H:%M"),
+            })
+    return proposals
 
 
 @router.get("/balance")
@@ -105,9 +179,52 @@ def balance(days: int = Query(7, ge=1, le=30)):
             "message": f"22時以降の作業完了が過去{days}日で {late_count} 件。睡眠優先",
         })
 
+    # 保護ブロックの提案 (承認制) — family/health の不足時のみ、今後の空き枠から具体案を出す。
+    # ここでは【提案のみ】。カレンダー書き込みは POST /balance/protect/confirm (本人の1タップ) だけが行う。
+    deficit_cats = [w["category"] for w in warnings if w["category"] in PROTECT_DEFAULTS]
+    protect_proposals: list[dict] = []
+    if deficit_cats:
+        try:
+            from gcal import is_configured, list_events_range
+            if is_configured():
+                fstart = now.strftime("%Y-%m-%d")
+                fend = (now + timedelta(days=7)).strftime("%Y-%m-%d")
+                future_events = list_events_range(fstart, fend)
+                busy = _busy_intervals(future_events)
+                protect_proposals = _protect_proposals(deficit_cats, now, busy)
+        except Exception:
+            protect_proposals = []
+
     return {
         "days": days,
         "completions_by_category": counts,
         "calendar_minutes_by_category": cal_minutes,
         "warnings": warnings,
+        "protect_proposals": protect_proposals,
     }
+
+
+class ProtectConfirm(BaseModel):
+    title: str
+    start_iso: str
+    end_iso: str
+    category: str = "family"
+
+
+@router.post("/balance/protect/confirm")
+def protect_confirm(body: ProtectConfirm):
+    """保護ブロックを実際にカレンダーへ確保する。実データ書き込みはこの明示操作でだけ起きる。"""
+    from gcal import create_event, is_configured
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="calendar not configured")
+    try:
+        ev = create_event(
+            title=body.title,
+            start_iso=body.start_iso,
+            end_iso=body.end_iso,
+            description="Koach OS が確保した保護ブロック（家族・健康を守る）。動かして構いません。",
+            event_type="default",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"create_event failed: {e}")
+    return {"ok": True, "event_id": ev.get("id", ""), "html_link": ev.get("htmlLink", "")}

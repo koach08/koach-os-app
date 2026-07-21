@@ -114,7 +114,20 @@ function formatGreeting(): string {
 }
 
 type BalanceWarning = { severity: string; category: string; message: string };
-type Balance = { warnings: BalanceWarning[]; calendar_minutes_by_category: Record<string, number> };
+type ProtectProposal = {
+  id: string;
+  category: string;
+  label: string;
+  title: string;
+  start_iso: string;
+  end_iso: string;
+  when_text: string;
+};
+type Balance = {
+  warnings: BalanceWarning[];
+  calendar_minutes_by_category: Record<string, number>;
+  protect_proposals?: ProtectProposal[];
+};
 type KpiMetric = { id: string; label: string; value: number; unit?: string; delta_7d?: number | null; category?: string };
 type FamilyEvent = { id: string; title: string; start_iso: string };
 type HealthHint = { hint: string; energy_band: string };
@@ -130,6 +143,30 @@ export default function DailyPage() {
   const [kpiMetrics, setKpiMetrics] = useState<KpiMetric[]>([]);
   const [family, setFamily] = useState<FamilyEvent[]>([]);
   const [healthHint, setHealthHint] = useState<HealthHint | null>(null);
+  const [protectDone, setProtectDone] = useState<Set<string>>(new Set());
+  const [protectBusy, setProtectBusy] = useState<string | null>(null);
+
+  const confirmProtect = async (p: ProtectProposal) => {
+    if (protectBusy) return;
+    setProtectBusy(p.id);
+    try {
+      const r = await fetch("/api/balance/protect/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: p.title,
+          start_iso: p.start_iso,
+          end_iso: p.end_iso,
+          category: p.category,
+        }),
+      });
+      if (r.ok) setProtectDone((s) => new Set(s).add(p.id));
+    } catch {
+      /* keep proposal; user can retry */
+    } finally {
+      setProtectBusy(null);
+    }
+  };
 
   const completionKey = (kind: "calendar" | "backlog", refId: string) =>
     `${kind}:${refId}`;
@@ -416,6 +453,61 @@ export default function DailyPage() {
                   <span>{w.message}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* ⛊ 家族・健康を守る — 不足を警告で終わらせず、空き枠に1タップで確保 (承認制) */}
+          {balance && (balance.protect_proposals ?? []).length > 0 && (
+            <div
+              className="rounded-2xl p-5"
+              style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.25)" }}
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">⛊</span>
+                <h2 className="font-semibold">家族・健康を守る</h2>
+                <span className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  不足を空き枠に確保します
+                </span>
+              </div>
+              <ul className="space-y-2">
+                {(balance.protect_proposals ?? []).map((p) => {
+                  const done = protectDone.has(p.id);
+                  return (
+                    <li
+                      key={p.id}
+                      className="flex items-center gap-3 text-sm p-2 rounded-lg"
+                      style={{ background: "var(--color-surface)" }}
+                    >
+                      <span
+                        className="font-mono text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                        style={{ background: "rgba(16,185,129,0.15)", color: "#10b981", minWidth: "2.5rem", textAlign: "center" }}
+                      >
+                        {p.label}
+                      </span>
+                      <span className="flex-1">
+                        <span className="font-medium">{p.title}</span>
+                        <span className="ml-2" style={{ color: "var(--color-text-muted)" }}>
+                          {p.when_text}
+                        </span>
+                      </span>
+                      {done ? (
+                        <span className="text-xs shrink-0" style={{ color: "#10b981" }}>
+                          確保済み ✓
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => confirmProtect(p)}
+                          disabled={protectBusy !== null}
+                          className="shrink-0 rounded-full px-4 py-1.5 text-xs font-medium disabled:opacity-40"
+                          style={{ background: "#10b981", color: "#fff" }}
+                        >
+                          {protectBusy === p.id ? "確保中..." : "確保する"}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
           )}
 

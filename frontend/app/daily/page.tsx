@@ -128,6 +128,11 @@ type Balance = {
   calendar_minutes_by_category: Record<string, number>;
   protect_proposals?: ProtectProposal[];
 };
+type MeasureSummary = {
+  verdict: string;
+  proposals: { pending: number; promoted: number; approval_rate: number | null };
+  protect: { window_confirmed: number };
+};
 type KpiMetric = { id: string; label: string; value: number; unit?: string; delta_7d?: number | null; category?: string };
 type FamilyEvent = { id: string; title: string; start_iso: string };
 type HealthHint = { hint: string; energy_band: string };
@@ -145,6 +150,7 @@ export default function DailyPage() {
   const [healthHint, setHealthHint] = useState<HealthHint | null>(null);
   const [protectDone, setProtectDone] = useState<Set<string>>(new Set());
   const [protectBusy, setProtectBusy] = useState<string | null>(null);
+  const [measure, setMeasure] = useState<MeasureSummary | null>(null);
 
   const confirmProtect = async (p: ProtectProposal) => {
     if (protectBusy) return;
@@ -203,6 +209,7 @@ export default function DailyPage() {
     fetch("/api/kpi").then((r) => r.ok ? r.json() : null).then((d) => d && setKpiMetrics((d.metrics ?? []).slice(0, 4))).catch(() => {});
     fetch("/api/calendar/family?days_ahead=2").then((r) => r.ok ? r.json() : null).then((d) => d && setFamily(d.events ?? [])).catch(() => {});
     fetch("/api/health-data/state-hint").then((r) => r.ok ? r.json() : null).then((d) => d && setHealthHint(d)).catch(() => {});
+    fetch("/api/measure?days=30").then((r) => r.ok ? r.json() : null).then((d) => d && setMeasure(d)).catch(() => {});
     const onCaptured = () => load();
     window.addEventListener("koach-capture-saved", onCaptured);
     return () => window.removeEventListener("koach-capture-saved", onCaptured);
@@ -509,6 +516,43 @@ export default function DailyPage() {
                 })}
               </ul>
             </div>
+          )}
+
+          {/* 📐 ループの効き目 — 提案が行動になっているかを朝に一目で。詳細は /measure */}
+          {measure && (measure.proposals.pending > 0 || measure.proposals.promoted > 0 || measure.protect.window_confirmed > 0) && (
+            <a
+              href="/measure"
+              className="block rounded-3xl p-5 transition-colors"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="font-semibold flex items-center gap-2">
+                  <span>📐</span> ループの効き目
+                </h2>
+                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                  直近30日 ›
+                </span>
+              </div>
+              <p className="text-sm leading-relaxed mb-3" style={{ color: "var(--color-text-muted)" }}>
+                {measure.verdict}
+              </p>
+              <div className="flex gap-4 text-sm">
+                <span>
+                  <span className="tabular-nums font-semibold">{measure.proposals.pending}</span>
+                  <span style={{ color: "var(--color-text-muted)" }}> 未処理</span>
+                </span>
+                <span>
+                  <span className="tabular-nums font-semibold">
+                    {measure.proposals.approval_rate === null ? "—" : `${Math.round(measure.proposals.approval_rate * 100)}%`}
+                  </span>
+                  <span style={{ color: "var(--color-text-muted)" }}> 承認率</span>
+                </span>
+                <span>
+                  <span className="tabular-nums font-semibold">{measure.protect.window_confirmed}</span>
+                  <span style={{ color: "var(--color-text-muted)" }}> 保護確保</span>
+                </span>
+              </div>
+            </a>
           )}
 
           {data && (

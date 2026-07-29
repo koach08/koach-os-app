@@ -13,11 +13,14 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from data_manager import now_jst
+from data_manager import DATA_DIR, append_jsonl, now_jst, timestamp_jst
 
 router = APIRouter()
 
 _JST = timezone(timedelta(hours=9))
+
+# 確保した保護ブロックの台帳 (append-only)。/api/measure が実行率を測るのに読む。
+PROTECT_LOG_FILE = DATA_DIR / "protect_log.jsonl"
 
 # 保護ブロックの既定候補 (JST 時刻, 分)。上から順に空きを探す。
 # family=夕方/週末昼、health=朝/夕方。title の keyword は _guess_category が拾える語に合わせる
@@ -227,4 +230,16 @@ def protect_confirm(body: ProtectConfirm):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"create_event failed: {e}")
+    # 実行率の測定用に台帳へ 1 行残す (失敗しても確保自体は成功扱い)。
+    try:
+        append_jsonl(PROTECT_LOG_FILE, {
+            "category": body.category,
+            "title": body.title,
+            "start_iso": body.start_iso,
+            "end_iso": body.end_iso,
+            "event_id": ev.get("id", ""),
+            "confirmed_at": timestamp_jst(),
+        })
+    except Exception:
+        pass
     return {"ok": True, "event_id": ev.get("id", ""), "html_link": ev.get("htmlLink", "")}

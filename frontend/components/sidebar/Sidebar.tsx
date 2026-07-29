@@ -27,6 +27,7 @@ const NAV_ITEMS = [
   { href: "/memos", label: "Memos", icon: "🪧" },
   { href: "/worklog", label: "実績ログ", icon: "📒" },
   { href: "/proposals", label: "承認待ち", icon: "📥" },
+  { href: "/measure", label: "ループの効き目", icon: "📐" },
   { href: "/routines", label: "ルーティン", icon: "🔁" },
   { href: "/uni-inbox", label: "大学メール", icon: "🎓" },
   { href: "/gmail-sync", label: "予定を追加", icon: "📅" },

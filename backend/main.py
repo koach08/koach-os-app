@@ -119,6 +119,8 @@ from routers import proposals
 app.include_router(proposals.router, prefix="/api")
 from routers import uni_inbox
 app.include_router(uni_inbox.router, prefix="/api")
+from routers import measure
+app.include_router(measure.router, prefix="/api")
 
 
 @app.get("/api/health")

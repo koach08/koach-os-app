@@ -39,10 +39,18 @@ REMINDER_PRESETS = {
         {"method": "popup", "minutes": 4320},      # 3 days before
         {"method": "email", "minutes": 10080},     # 1 week before
     ],
+    "exam": [
+        {"method": "popup", "minutes": 120},       # 2h before
+        {"method": "popup", "minutes": 1440},      # 1 day before
+        {"method": "email", "minutes": 2880},      # 2 days before
+    ],
     "default": [
         {"method": "popup", "minutes": 15},
     ],
 }
+
+# 「前日通知」を最低限持つべき重要種別 (reminder gap 判定・当日必達に使う)
+IMPORTANT_EVENT_TYPES = {"meeting", "committee", "deadline", "exam"}
 
 
 def _token_env_name(slot: int) -> str:
@@ -224,7 +232,9 @@ def get_calendar_context() -> str:
 def detect_event_type(title: str, description: str = "") -> str:
     """Auto-detect event type from title/description for reminder selection."""
     text = (title + " " + description).lower()
-    if any(k in text for k in ["deadline", "due", "submit", "提出", "締切", "締め切り", "期限"]):
+    if any(k in text for k in ["exam", "入試", "試験", "採点", "監督", "願書", "出願", "選抜"]):
+        return "exam"
+    if any(k in text for k in ["deadline", "due", "submit", "提出", "締切", "締め切り", "期限", "書類", "申告", "申請"]):
         return "deadline"
     if any(k in text for k in ["committee", "委員会", "理事会", "審議会", "評議会"]):
         return "committee"
@@ -421,6 +431,20 @@ def update_event(
     return service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
 
+def set_event_reminders(event_id: str, event_type: str, *,
+                        calendar_id: str = "primary", slot: int = 1) -> dict:
+    """指定 event に種別プリセットの通知を付ける (加点のみ・予定の中身は触らない)。
+
+    本人の明示操作 (1タップ) からだけ呼ぶ。自動ジョブからは呼ばない。
+    """
+    service = _get_service(slot)
+    reminders = REMINDER_PRESETS.get(event_type, REMINDER_PRESETS["default"])
+    body = {"reminders": {"useDefault": False, "overrides": reminders}}
+    result = service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
+    result["_reminders_set"] = reminders
+    return result
+
+
 def _extra_calendar_ids() -> list[str]:
     """EXTRA_CALENDAR_IDS env (comma-separated) — 妻 / 子供 / 共有 calendar の ID."""
     import os
@@ -488,6 +512,7 @@ def list_events_range_multi(start_date: str, end_date: str, calendar_ids: list[s
                 "description": ev.get("description", ""),
                 "html_link": ev.get("htmlLink", ""),
                 "event_type": detect_event_type(ev.get("summary", ""), ev.get("description", "")),
+                "reminders": ev.get("reminders", {}),
             })
     out.sort(key=lambda e: e["start_iso"])
     return out

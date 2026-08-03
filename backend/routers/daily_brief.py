@@ -369,6 +369,31 @@ def daily_brief(
         else "(対応待ちメールなし)"
     )
 
+    # 9a2. ノーショー・ガード — 当日必達 + 日付ズレ疑いを最上段で拾う
+    guard_must = []
+    guard_suspects = []
+    try:
+        from routers.guard import scan as _guard_scan
+        g = _guard_scan(days=10)
+        guard_must = g.get("must_not_miss", [])
+        guard_suspects = g.get("date_suspects", [])
+    except Exception:
+        pass
+    must_miss_text = (
+        "\n".join(
+            f"- {m['start_iso'][11:16]} {m['title']}" + (f" @ {m['location']}" if m.get("location") else "")
+            + f"（{m['when']} {m['weekday']}）"
+            for m in guard_must
+        )
+        if guard_must
+        else "(なし)"
+    )
+    suspects_text = (
+        "\n".join(f"- {s['title']}: {s['note']}" for s in guard_suspects)
+        if guard_suspects
+        else "(なし)"
+    )
+
     # 9b. 今日の状態 (エネルギー) — 出力の強度とトーンを合わせる
     energy_band = "unknown"
     energy_hint = ""
@@ -431,6 +456,12 @@ def daily_brief(
 今は {now.strftime('%Y-%m-%d %H:%M (%A)')} 。
 これから1日が始まる。生活を回すための朝のbriefingを出す。
 
+## 今日ぜったい落とせない（会議・締切・入試など時刻付き重要予定・最優先で先頭に）
+{must_miss_text}
+
+## 日付ズレ疑い（タイトルの曜日と実際の曜日が食い違う＝1日ズレの可能性・要確認）
+{suspects_text}
+
 ## 今日の予定
 {schedule_text}
 
@@ -466,6 +497,8 @@ def daily_brief(
 → {energy_directive}
 
 ## 出力ルール
+- 冒頭でまず「今日ぜったい落とせない」を提示する（該当あれば）。時刻付きで、すっぽかさないよう念押しする
+- 「日付ズレ疑い」が該当すれば、必ず「この予定、日付が1日ズレていないか確認を」と警告する
 - 予定とバックログを見て「今日この時間にこれをやる」を提案する。時間帯（例: 10:00-11:30）を必ず添える。件数は上の『今日の状態』の指示に従う（平常3つ／低エネルギー最大2つ）
 - 低エネルギーの日は、休息や家族の時間を削らないことを最優先にし、守りでよいと伝える
 - 今朝の autopilot 結論は既に調べ済み。同じ調査を繰り返さず、その結論を前提に今日の一手へ繋げる
@@ -528,6 +561,8 @@ def daily_brief(
         "email_pending_total": email_pending_total,
         "energy_band": energy_band,
         "energy_hint": energy_hint,
+        "must_not_miss": guard_must,
+        "date_suspects": guard_suspects,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

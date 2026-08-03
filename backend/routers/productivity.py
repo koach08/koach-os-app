@@ -387,7 +387,7 @@ def commit_plan(req: CommitPlanRequest):
                 start_iso=blk.start_iso,
                 end_iso=blk.end_iso,
                 description=blk.description or f"[Koach Coach] category={blk.category}",
-                event_type="default",
+                event_type=None,  # タイトルから自動判定 (会議/締切/入試は前日通知が付く)
             )
             results.append({"ok": True, "id": ev.get("id", ""), "html_link": ev.get("htmlLink", "")})
         except Exception as e:

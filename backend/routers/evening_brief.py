@@ -92,8 +92,33 @@ def evening_brief(engine: str = Query("claude")):
         else "(明日の予定なし)"
     )
 
+    # 今日の状態 (エネルギー) — トーンを合わせる
+    energy_band = "unknown"
+    energy_hint = ""
+    try:
+        from routers.health_intake import state_hint
+        sh = state_hint()
+        energy_band = sh.get("energy_band", "unknown")
+        energy_hint = sh.get("hint", "")
+    except Exception:
+        pass
+    if energy_band == "low":
+        energy_directive = (
+            "本人は今日消耗していた。完了が少なくても責めない。動けただけで十分と伝え、"
+            "早く休むことを勧める。明日への繰越しは1つに絞る。"
+        )
+    elif energy_band == "high":
+        energy_directive = "本人は今日調子が良かった。前進を認めつつ、明日も無理なく続く配分を促す。"
+    else:
+        energy_directive = "通常どおり淡々と振り返る。"
+    energy_text = energy_hint or "(今日の状態データなし)"
+
     prompt = f"""あなたは Koach OS。夜の振り返りを担当する reflective AI partner。
 今は {now.strftime('%Y-%m-%d %H:%M (%A)')}。一日の終わり。
+
+## 今日の状態（エネルギー）
+{energy_text}
+→ {energy_directive}
 
 ## 今日完了したこと ({len(completions_today)}件)
 {completion_text}

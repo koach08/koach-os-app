@@ -369,6 +369,28 @@ def daily_brief(
         else "(対応待ちメールなし)"
     )
 
+    # 9b. 今日の状態 (エネルギー) — 出力の強度とトーンを合わせる
+    energy_band = "unknown"
+    energy_hint = ""
+    try:
+        from routers.health_intake import state_hint
+        sh = state_hint()
+        energy_band = sh.get("energy_band", "unknown")
+        energy_hint = sh.get("hint", "")
+    except Exception:
+        pass
+    if energy_band == "low":
+        energy_directive = (
+            "本人は消耗している（低エネルギー）。今日の一手は3つでなく最大2つに絞り、"
+            "重い深掘りは避ける。休息・睡眠を削らせない。無理に発破をかけず、"
+            "『今日は守りでいい』と明示的に許可する。"
+        )
+    elif energy_band == "high":
+        energy_directive = "本人は調子が良い（高エネルギー）。重めの一手を1つ混ぜて前進を後押ししてよい。"
+    else:
+        energy_directive = "エネルギーは平常。通常どおり今日3つを提案する。"
+    energy_text = energy_hint or "(今日の状態データなし)"
+
     # 5. AI問いかけ（L3介入相当：今日3つに絞れ）
     schedule_text = (
         "\n".join(
@@ -439,8 +461,13 @@ def daily_brief(
 ## 今日すでに完了したこと
 {completion_text}
 
+## 今日の状態（エネルギー）
+{energy_text}
+→ {energy_directive}
+
 ## 出力ルール
-- 予定とバックログを見て「今日この時間にこれをやる」を3つだけ提案する。時間帯（例: 10:00-11:30）を必ず添える
+- 予定とバックログを見て「今日この時間にこれをやる」を提案する。時間帯（例: 10:00-11:30）を必ず添える。件数は上の『今日の状態』の指示に従う（平常3つ／低エネルギー最大2つ）
+- 低エネルギーの日は、休息や家族の時間を削らないことを最優先にし、守りでよいと伝える
 - 今朝の autopilot 結論は既に調べ済み。同じ調査を繰り返さず、その結論を前提に今日の一手へ繋げる
 - 大学の未反映に締切が近いもの / 数日止まっている対応待ちメールがあれば、今日やる3つ or 問いに必ず反映する
 - 予定の隙間時間を具体的にどう使うかブロックで示す
@@ -499,6 +526,8 @@ def daily_brief(
         "proposals_pending": proposals_pending,
         "email_pending": email_pending,
         "email_pending_total": email_pending_total,
+        "energy_band": energy_band,
+        "energy_hint": energy_hint,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

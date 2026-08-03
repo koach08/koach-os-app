@@ -70,6 +70,8 @@ type DailyBrief = {
   proposals_pending?: ProposalPending[];
   email_pending?: EmailPending[];
   email_pending_total?: number;
+  must_not_miss?: MustNotMiss[];
+  date_suspects?: DateSuspect[];
   ai_brief: string;
   engine_used: string;
   model_used: string;
@@ -134,6 +136,24 @@ type MeasureSummary = {
   protect: { window_confirmed: number };
   decisions?: { pending_outcome: number };
 };
+type MustNotMiss = {
+  id: string;
+  title: string;
+  start_iso: string;
+  event_type: string;
+  location?: string;
+  when: string;
+  weekday: string;
+};
+type DateSuspect = { id: string; title: string; note: string; start_iso: string };
+type ReminderGap = {
+  id: string;
+  slot: number;
+  calendar_id: string;
+  title: string;
+  start_iso: string;
+  event_type: string;
+};
 type KpiMetric = { id: string; label: string; value: number; unit?: string; delta_7d?: number | null; category?: string };
 type FamilyEvent = { id: string; title: string; start_iso: string };
 type HealthHint = { hint: string; energy_band: string };
@@ -152,6 +172,29 @@ export default function DailyPage() {
   const [protectDone, setProtectDone] = useState<Set<string>>(new Set());
   const [protectBusy, setProtectBusy] = useState<string | null>(null);
   const [measure, setMeasure] = useState<MeasureSummary | null>(null);
+  const [reminderGaps, setReminderGaps] = useState<ReminderGap[]>([]);
+  const [gapDone, setGapDone] = useState<Set<string>>(new Set());
+  const [gapBusy, setGapBusy] = useState<string | null>(null);
+
+  const fixReminder = async (g: ReminderGap) => {
+    if (gapBusy) return;
+    setGapBusy(g.id);
+    try {
+      const r = await fetch("/api/guard/fix-reminders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_id: g.id,
+          event_type: g.event_type,
+          calendar_id: g.calendar_id,
+          slot: g.slot,
+        }),
+      });
+      if (r.ok) setGapDone((s) => new Set(s).add(g.id));
+    } finally {
+      setGapBusy(null);
+    }
+  };
 
   const confirmProtect = async (p: ProtectProposal) => {
     if (protectBusy) return;
@@ -211,6 +254,7 @@ export default function DailyPage() {
     fetch("/api/calendar/family?days_ahead=2").then((r) => r.ok ? r.json() : null).then((d) => d && setFamily(d.events ?? [])).catch(() => {});
     fetch("/api/health-data/state-hint").then((r) => r.ok ? r.json() : null).then((d) => d && setHealthHint(d)).catch(() => {});
     fetch("/api/measure?days=30").then((r) => r.ok ? r.json() : null).then((d) => d && setMeasure(d)).catch(() => {});
+    fetch("/api/guard/scan?days=10").then((r) => r.ok ? r.json() : null).then((d) => d && setReminderGaps(d.reminder_gaps ?? [])).catch(() => {});
     const onCaptured = () => load();
     window.addEventListener("koach-capture-saved", onCaptured);
     return () => window.removeEventListener("koach-capture-saved", onCaptured);
@@ -461,6 +505,85 @@ export default function DailyPage() {
                   <span>{w.message}</span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* 🚨 今日ぜったい落とせない — 会議/締切/入試の時刻付き重要予定を最上段で念押し */}
+          {data && (data.must_not_miss ?? []).length > 0 && (
+            <div
+              className="rounded-2xl p-5 space-y-2"
+              style={{ background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.3)" }}
+            >
+              <h2 className="font-semibold flex items-center gap-2" style={{ color: "#ef4444" }}>
+                <span>🚨</span> 今日ぜったい落とせない
+              </h2>
+              <ul className="space-y-1.5">
+                {(data.must_not_miss ?? []).map((m) => (
+                  <li key={m.id} className="text-sm flex items-baseline gap-2">
+                    <span className="font-mono font-semibold tabular-nums">{m.start_iso.slice(11, 16)}</span>
+                    <span>
+                      {m.title}
+                      {m.location ? <span style={{ color: "var(--color-text-muted)" }}> @ {m.location}</span> : null}
+                      <span style={{ color: "var(--color-text-muted)" }}> （{m.when} {m.weekday}）</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* ⚠️ 日付ズレ疑い — タイトルの曜日と実日付が食い違う予定 */}
+          {data && (data.date_suspects ?? []).length > 0 && (
+            <div
+              className="rounded-2xl p-5 space-y-2"
+              style={{ background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.3)" }}
+            >
+              <h2 className="font-semibold flex items-center gap-2" style={{ color: "#f59e0b" }}>
+                <span>⚠️</span> 日付ズレ疑い（1日ズレていないか確認を）
+              </h2>
+              <ul className="space-y-1.5">
+                {(data.date_suspects ?? []).map((s) => (
+                  <li key={s.id} className="text-sm">
+                    <span className="font-medium">{s.title}</span>
+                    <span style={{ color: "var(--color-text-muted)" }}> — {s.note}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 🔔 通知が手薄な重要予定 — 前日通知が付いていないものに1タップで付ける */}
+          {reminderGaps.filter((g) => !gapDone.has(g.id)).length > 0 && (
+            <div
+              className="rounded-2xl p-5 space-y-2"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            >
+              <h2 className="font-semibold flex items-center gap-2">
+                <span>🔔</span> 通知が手薄な重要予定
+              </h2>
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                前日通知が付いていない会議・締切・入試です。付けるとスマホの Google カレンダー通知が届きます。
+              </p>
+              <ul className="space-y-2">
+                {reminderGaps
+                  .filter((g) => !gapDone.has(g.id))
+                  .map((g) => (
+                    <li key={`${g.slot}:${g.id}`} className="flex items-center justify-between gap-2">
+                      <span className="text-sm">
+                        {g.title}
+                        <span style={{ color: "var(--color-text-muted)" }}> （{g.start_iso.slice(0, 10)}）</span>
+                      </span>
+                      <button
+                        onClick={() => fixReminder(g)}
+                        disabled={gapBusy !== null}
+                        className="shrink-0 rounded-full px-3 py-1 text-xs font-medium disabled:opacity-40"
+                        style={{ background: "var(--color-accent)", color: "#fff" }}
+                      >
+                        {gapBusy === g.id ? "設定中..." : "通知を付ける"}
+                      </button>
+                    </li>
+                  ))}
+              </ul>
             </div>
           )}
 

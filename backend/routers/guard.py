@@ -51,6 +51,20 @@ def _wd_ja(idx: int) -> str:
     return "月火水木金土日"[idx] if 0 <= idx <= 6 else "?"
 
 
+def _is_multiday_period(ev: dict) -> bool:
+    """複数日にまたがる終日イベント (夏季休業・受理期間など) か。予定でなく期間なので除外用。"""
+    if not ev.get("all_day"):
+        return False
+    s = (ev.get("start_iso", "") or "")[:10]
+    e = (ev.get("end_iso", "") or "")[:10]
+    if len(s) != 10 or len(e) != 10:
+        return False
+    try:
+        return (datetime.fromisoformat(e) - datetime.fromisoformat(s)).days > 1
+    except Exception:
+        return False
+
+
 @router.get("/guard/scan")
 def scan(days: int = Query(10, ge=1, le=30)):
     now = now_jst()
@@ -69,6 +83,7 @@ def scan(days: int = Query(10, ge=1, le=30)):
     must_not_miss: list[dict] = []
     date_suspects: list[dict] = []
     reminder_gaps: list[dict] = []
+    gap_seen: set[str] = set()  # (title, date) で多カレンダー重複を畳む
 
     for ev in events:
         title = ev.get("title", "")
@@ -76,10 +91,12 @@ def scan(days: int = Query(10, ge=1, le=30)):
         etype = ev.get("event_type", "default")
         date_part = start_iso[:10]
         important = etype in IMPORTANT_EVENT_TYPES
+        period = _is_multiday_period(ev)  # 夏季休業・受理期間などの「期間」は予定でないので対象外
 
         # 1. 日付ズレ疑い: タイトルの曜日 vs 実日付の曜日
-        wd_text = _weekday_in_text(title + " " + ev.get("description", ""))
-        if wd_text is not None and len(date_part) == 10:
+        #    ※タイトルのみ見る (description には別日付の曜日が混ざり誤検知するため)
+        wd_text = _weekday_in_text(title)
+        if wd_text is not None and len(date_part) == 10 and not period:
             try:
                 actual_wd = datetime.fromisoformat(date_part).weekday()
                 if actual_wd != wd_text:
@@ -100,12 +117,15 @@ def scan(days: int = Query(10, ge=1, le=30)):
                 "when": date_part, "weekday": _wd_ja(datetime.fromisoformat(date_part).weekday()) if len(date_part) == 10 else "",
             })
 
-        # 3. 通知欠落: 重要予定なのに前日通知なし
-        if important and not _has_day_before(ev.get("reminders", {})):
-            reminder_gaps.append({
-                "id": ev.get("id"), "slot": ev.get("slot"), "calendar_id": ev.get("calendar_id"),
-                "title": title, "start_iso": start_iso, "event_type": etype,
-            })
+        # 3. 通知欠落: 重要予定なのに前日通知なし (期間ものは除外・多カレンダー重複は畳む)
+        if important and not period and not _has_day_before(ev.get("reminders", {})):
+            gk = f"{title}::{date_part}"
+            if gk not in gap_seen:
+                gap_seen.add(gk)
+                reminder_gaps.append({
+                    "id": ev.get("id"), "slot": ev.get("slot"), "calendar_id": ev.get("calendar_id"),
+                    "title": title, "start_iso": start_iso, "event_type": etype,
+                })
 
     must_not_miss.sort(key=lambda x: x.get("start_iso", ""))
     reminder_gaps.sort(key=lambda x: x.get("start_iso", ""))

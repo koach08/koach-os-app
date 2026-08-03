@@ -26,6 +26,12 @@ type Measure = {
     by_category: Record<string, number>;
     last: { title?: string; category?: string; confirmed_at?: string } | null;
   };
+  decisions: {
+    total: number;
+    with_outcome: number;
+    pending_outcome: number;
+    outcome_rate: number | null;
+  };
   execution: { completions: number; by_category: Record<string, number> };
   verdict: string;
 };
@@ -81,6 +87,7 @@ export default function MeasurePage() {
 
   const p = data?.proposals;
   const prot = data?.protect;
+  const dec = data?.decisions;
   const exe = data?.execution;
 
   return (
@@ -149,6 +156,31 @@ export default function MeasurePage() {
                 sub="生成→決着の中央値"
               />
             </div>
+          </section>
+
+          {/* 決定 → 結果 */}
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold" style={{ color: "var(--color-text-muted)" }}>
+              🧭 決定 → 結果（全期間）
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Stat label="決定の総数" value={String(dec!.total)} />
+              <Stat label="結果を記録済み" value={String(dec!.with_outcome)} />
+              <Stat
+                label="結果待ち"
+                value={String(dec!.pending_outcome)}
+                sub={dec!.pending_outcome >= 3 ? "溜まっています" : undefined}
+              />
+              <Stat label="結果記録率" value={pct(dec!.outcome_rate)} sub="決めて振り返った割合" />
+            </div>
+            {dec!.pending_outcome > 0 && (
+              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                「で、効いたのか?」の記録待ちが {dec!.pending_outcome} 件あります。
+                <a href="/review" className="underline ml-1" style={{ color: "var(--color-accent)" }}>
+                  週次レビューで閉じる ›
+                </a>
+              </p>
+            )}
           </section>
 
           {/* 保護の実行 */}

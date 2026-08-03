@@ -86,9 +86,28 @@ def _protect_execution(window_start: datetime) -> dict:
         confirmed += 1
         cat = e.get("category", "other")
         by_cat[cat] = by_cat.get(cat, 0) + 1
-        if last is None or (at and _parse(last.get("confirmed_at", "")) and at >= _parse(last.get("confirmed_at", ""))):
-            last = e
+        last = e  # append-only なのでファイル順で最後の該当行が最新
     return {"window_confirmed": confirmed, "by_category": by_cat, "last": last}
+
+
+def _decisions_funnel(now: datetime) -> dict:
+    """決定 → 結果の追跡。決めたものの「で、効いたのか?」がどれだけ閉じているか。"""
+    try:
+        from routers.memory import materialize_decisions, _is_pending_outcome
+    except Exception:
+        return {"total": 0, "with_outcome": 0, "pending_outcome": 0, "outcome_rate": None}
+    decisions = materialize_decisions()
+    cutoff_iso = (now - timedelta(days=14)).isoformat()
+    total = len(decisions)
+    with_outcome = sum(1 for d in decisions if (d.get("outcome") or "").strip())
+    pending = sum(1 for d in decisions if _is_pending_outcome(d, cutoff_iso))
+    # 結果を書く価値があるのは「決着 or 継続」した決定。分母は total とし、正直に。
+    return {
+        "total": total,
+        "with_outcome": with_outcome,
+        "pending_outcome": pending,
+        "outcome_rate": round(with_outcome / total, 3) if total else None,
+    }
 
 
 def _execution_context(window_start_date: str) -> dict:
@@ -108,19 +127,23 @@ def _execution_context(window_start_date: str) -> dict:
     return {"completions": total, "by_category": by_cat}
 
 
-def _verdict(prop: dict, prot: dict) -> str:
+def _verdict(prop: dict, prot: dict, dec: dict) -> str:
     """溜めてるだけ / 効いてる を正直に一言。"""
-    if prop["total"] == 0:
-        return "まだ下書きが生成されていません。水曜の consolidate が動けば測定が始まります。"
+    if prop["total"] == 0 and dec["total"] == 0:
+        return "まだ下書きも決定も溜まっていません。水曜の consolidate が動けば測定が始まります。"
     if prop["pending"] >= 5 and (prop["triage_rate"] or 0) < 0.4:
         return f"未処理が {prop['pending']} 件溜まっています。承認/却下で捌かないと propose-loop が劇場になります。"
+    if dec["pending_outcome"] >= 3:
+        return f"結果待ちの決定が {dec['pending_outcome']} 件。「で、効いたのか?」を記録しないと判断力が育ちません。週次レビューで閉じましょう。"
     parts = []
     if prop["approval_rate"] is not None:
         parts.append(f"下書きの承認率 {int(prop['approval_rate'] * 100)}%")
+    if dec["outcome_rate"] is not None:
+        parts.append(f"決定の結果記録 {int(dec['outcome_rate'] * 100)}%")
     if prot["window_confirmed"] > 0:
         parts.append(f"保護ブロックを {prot['window_confirmed']} 回確保")
     if not parts:
-        return "決着した下書きがまだありません。捌けば承認率が出ます。"
+        return "決着した下書きも記録済みの結果もまだありません。捌けば数字が出ます。"
     return "、".join(parts) + " — ループは行動まで届いています。"
 
 
@@ -132,6 +155,7 @@ def measure(days: int = Query(30, ge=1, le=180)):
 
     prop = _proposals_funnel(window_start)
     prot = _protect_execution(window_start)
+    dec = _decisions_funnel(now)
     exe = _execution_context(window_start_date)
 
     return {
@@ -139,6 +163,7 @@ def measure(days: int = Query(30, ge=1, le=180)):
         "generated_at": now.isoformat(),
         "proposals": prop,
         "protect": prot,
+        "decisions": dec,
         "execution": exe,
-        "verdict": _verdict(prop, prot),
+        "verdict": _verdict(prop, prot, dec),
     }

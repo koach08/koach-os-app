@@ -132,6 +132,7 @@ type MeasureSummary = {
   verdict: string;
   proposals: { pending: number; promoted: number; approval_rate: number | null };
   protect: { window_confirmed: number };
+  decisions?: { pending_outcome: number };
 };
 type KpiMetric = { id: string; label: string; value: number; unit?: string; delta_7d?: number | null; category?: string };
 type FamilyEvent = { id: string; title: string; start_iso: string };
@@ -551,6 +552,14 @@ export default function DailyPage() {
                   <span className="tabular-nums font-semibold">{measure.protect.window_confirmed}</span>
                   <span style={{ color: "var(--color-text-muted)" }}> 保護確保</span>
                 </span>
+                {measure.decisions && measure.decisions.pending_outcome > 0 && (
+                  <span>
+                    <span className="tabular-nums font-semibold" style={{ color: "#f59e0b" }}>
+                      {measure.decisions.pending_outcome}
+                    </span>
+                    <span style={{ color: "var(--color-text-muted)" }}> 結果待ち</span>
+                  </span>
+                )}
               </div>
             </a>
           )}

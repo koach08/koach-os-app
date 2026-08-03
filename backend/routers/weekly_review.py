@@ -47,6 +47,15 @@ def weekly_review(engine: str = Query("claude")):
     decisions = [d for d in read_jsonl(DECISIONS_FILE) if d.get("timestamp", "") >= cutoff_iso]
     failures = [f for f in read_jsonl(FAILURES_FILE) if f.get("timestamp", "") >= cutoff_iso]
 
+    # 結果を観測すべき決定 (14日以上前・未記入・未クローズ) — 週次で閉じるために拾う
+    try:
+        from routers.memory import materialize_decisions, _is_pending_outcome
+        po_cutoff = (now - timedelta(days=14)).isoformat()
+        pending_outcome = [d for d in materialize_decisions() if _is_pending_outcome(d, po_cutoff)]
+        pending_outcome.sort(key=lambda x: x.get("timestamp", ""))
+    except Exception:
+        pending_outcome = []
+
     # tasks (open) — 来週への繰越候補
     state_tasks: dict[str, dict] = {}
     for e in read_jsonl(TASKS_FILE):
@@ -73,6 +82,9 @@ def weekly_review(engine: str = Query("claude")):
     decision_text = "\n".join(f"- {d.get('title','')}" for d in decisions[-8:]) or "(決定なし)"
     failure_text = "\n".join(f"- {f.get('what','')} → {f.get('lesson','')}" for f in failures[-5:]) or "(失敗ログなし)"
     backlog_text = "\n".join(f"- [{b.get('urgency','m')}] {b.get('title','')}" for b in backlog_open[:15]) or "(バックログなし)"
+    pending_outcome_text = "\n".join(
+        f"- {d.get('timestamp','')[:10]} {d.get('title','')}" for d in pending_outcome[:8]
+    ) or "(結果待ちの決定なし)"
 
     prompt = f"""あなたは Koach OS。一週間の振り返りを担当する。
 今は {now.strftime('%Y-%m-%d (%A)')}。
@@ -93,6 +105,9 @@ def weekly_review(engine: str = Query("claude")):
 ## 未完バックログ
 {backlog_text}
 
+## 結果待ちの決定 (2週間以上前に決めたが、効いたか未記録)
+{pending_outcome_text}
+
 ## 出力ルール
 出力フォーマット:
 
@@ -104,6 +119,9 @@ def weekly_review(engine: str = Query("claude")):
 
 ### 来週への繰越し (最大5件)
 - バックログから「来週やる」だけ抜く。後回しでよいものは捨てる提案も書く
+
+### 結果を記録すべき決定 (該当あれば最大3件)
+- 上の「結果待ちの決定」から、今こそ効いたか振り返るべきものを挙げる。なければ省略
 
 ### 来週の1つの問い (L3 介入)
 - 戦略的視点で本人に投げる問い 1つだけ
@@ -132,6 +150,11 @@ def weekly_review(engine: str = Query("claude")):
         "completion_count": len(completions),
         "decision_count": len(decisions),
         "failure_count": len(failures),
+        "pending_outcome": [
+            {"id": d.get("id"), "title": d.get("title", ""), "timestamp": d.get("timestamp", ""),
+             "chosen": d.get("chosen", ""), "domain": d.get("domain", "personal")}
+            for d in pending_outcome[:8]
+        ],
         "focus_minutes_total": sum(by_cat.values()),
         "focus_by_category": by_cat,
         "review": review,

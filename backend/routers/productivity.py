@@ -24,6 +24,7 @@ DATA_DIR = Path(os.environ.get("KOACH_DATA_DIR", "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 BACKLOG_PATH = DATA_DIR / "productivity_backlog.json"
 LIFE_BLOCKS_PATH = DATA_DIR / "life_blocks.json"
+LIFE_LOAD_PATH = DATA_DIR / "life_load.json"
 
 router = APIRouter()
 
@@ -71,6 +72,22 @@ class LifeBlock(BaseModel):
     category: Category = "family"
 
 
+TimeOfDay = Literal["morning", "afternoon", "evening", "night", "any"]
+_TOD_JA = {"morning": "朝", "afternoon": "昼", "evening": "夕方", "night": "夜", "any": "随時"}
+
+
+class LifeLoad(BaseModel):
+    """時間割にできない毎日の負荷を「1日平均◯分」で持つ (子育て・家事・食事・通勤等)。
+
+    固定タイムテーブルの LifeBlock と違い、平均でスケジュールから先に差し引くための概念。
+    """
+    id: str = ""
+    label: str
+    avg_minutes_per_day: int = 60
+    time_of_day: TimeOfDay = "any"
+    category: Category = "family"
+
+
 class PlanRequest(BaseModel):
     horizon_days: int = 7
     engine: str = "claude"  # AI to use for the plan generation itself
@@ -96,6 +113,21 @@ def _load_backlog() -> list[dict]:
 
 def _load_life_blocks() -> list[dict]:
     return _read_json(LIFE_BLOCKS_PATH, [])
+
+
+def _load_life_load() -> list[dict]:
+    return _read_json(LIFE_LOAD_PATH, [])
+
+
+def _life_load_summary() -> tuple[int, str]:
+    """(1日あたり合計分, 表示テキスト) を返す。plan / daily brief に注入する。"""
+    items = _load_life_load()
+    total = sum(int(it.get("avg_minutes_per_day", 0) or 0) for it in items)
+    lines = "\n".join(
+        f"- {it.get('label','')} 平均{it.get('avg_minutes_per_day',0)}分/日 ({_TOD_JA.get(it.get('time_of_day','any'),'随時')})"
+        for it in items
+    )
+    return total, (lines or "(生活ロード未登録)")
 
 
 def _next_id() -> str:
@@ -249,6 +281,54 @@ def add_life_blocks_bulk(req: LifeBlockBulk):
     return {"created": created, "count": len(created)}
 
 
+# ─── CRUD: life load (毎日の平均負荷) ──────────────────────────────────────────
+@router.get("/productivity/life-load")
+def list_life_load():
+    total, _ = _life_load_summary()
+    return {"items": _load_life_load(), "total_minutes_per_day": total}
+
+
+@router.post("/productivity/life-load")
+def upsert_life_load(item: LifeLoad):
+    """追加 or 更新 (id 一致で置換)。avg_minutes は 0〜1440 に丸める。"""
+    items = _load_life_load()
+    new = item.model_dump()
+    new["avg_minutes_per_day"] = max(0, min(1440, int(new.get("avg_minutes_per_day", 0) or 0)))
+    if new.get("id"):
+        items = [new if it.get("id") == new["id"] else it for it in items]
+        if not any(it.get("id") == new["id"] for it in items):
+            items.append(new)
+    else:
+        new["id"] = _next_id()
+        items.append(new)
+    _write_json(LIFE_LOAD_PATH, items)
+    return new
+
+
+@router.delete("/productivity/life-load/{load_id}")
+def delete_life_load(load_id: str):
+    items = [it for it in _load_life_load() if it.get("id") != load_id]
+    _write_json(LIFE_LOAD_PATH, items)
+    return {"ok": True}
+
+
+@router.post("/productivity/life-load/seed")
+def seed_life_load():
+    """未登録なら初期セット (子育て/家事/食事/通勤) を入れる。時間は本人が後で調整。"""
+    if _load_life_load():
+        return {"seeded": False, "items": _load_life_load()}
+    base_ts = int(datetime.now().timestamp() * 1000)
+    seed = [
+        {"label": "子育て", "avg_minutes_per_day": 180, "time_of_day": "evening", "category": "family"},
+        {"label": "家事", "avg_minutes_per_day": 60, "time_of_day": "any", "category": "family"},
+        {"label": "食事", "avg_minutes_per_day": 60, "time_of_day": "any", "category": "rest"},
+        {"label": "通勤", "avg_minutes_per_day": 60, "time_of_day": "morning", "category": "other"},
+    ]
+    items = [{**s, "id": f"p{base_ts + i}"} for i, s in enumerate(seed)]
+    _write_json(LIFE_LOAD_PATH, items)
+    return {"seeded": True, "items": items}
+
+
 # ─── Plan generation ────────────────────────────────────────────────────────
 @router.post("/productivity/plan")
 def generate_plan(req: PlanRequest):
@@ -281,6 +361,9 @@ def generate_plan(req: PlanRequest):
         for b in life_blocks
     ) or "(固定の生活ブロックなし)"
 
+    load_total, load_text = _life_load_summary()
+    load_hours = round(load_total / 60, 1)
+
     backlog_text = "\n".join(
         f"- [{b['urgency']}] [{b['category']}] {b['title']} (推定{b['estimated_minutes']}分)"
         + (f"\n  メモ: {b['notes']}" if b.get("notes") else "")
@@ -296,7 +379,8 @@ def generate_plan(req: PlanRequest):
 - 複数の生成 AI を併用しながら開発・執筆・研究を並行進行
 
 あなたの仕事:
-1. Google Calendar の固定予定 + 毎週繰り返しの生活ブロック（保育園お迎え等）を尊重した上で、空き時間を把握
+1. Google Calendar の固定予定 + 毎週繰り返しの生活ブロック（保育園お迎え等）を尊重した上で、空き時間を把握。
+   さらに「毎日の生活ロード」（子育て・家事など時間割にできない平均負荷）の合計時間を、各日の空きから先に差し引いてから配置する。ここを無視して詰め込むと現実に回らない
 2. バックログのタスクを、優先度・推定時間・カテゴリのバランスを見ながら配置
 3. 全カテゴリ（キャリア/家族/健康/クリエイティブ/休息）に時間を確保する。1つに偏らない
 4. 「もうこれ以上は無理」というラインを見える化し、無理な時は減らす提案
@@ -325,10 +409,13 @@ def generate_plan(req: PlanRequest):
 ## 毎週繰り返しの生活ブロック
 {life_text}
 
+## 毎日の生活ロード（平均で確保・各日の空きから先に差し引く。合計 約{load_hours}時間/日）
+{load_text}
+
 ## バックログ (やりたい / やらないといけないこと)
 {backlog_text}
 
-上記を踏まえ、提案スケジュールを作成してください。"""
+上記を踏まえ、提案スケジュールを作成してください。生活ロードの平均を差し引いた現実的な空きだけに配置してください。"""
 
     engine = req.engine if req.engine in DEFAULT_MODELS else "claude"
     model = DEFAULT_MODELS.get(engine, DEFAULT_MODELS["claude"])
@@ -350,6 +437,7 @@ def generate_plan(req: PlanRequest):
         "calendar_events_count": len(cal_events),
         "backlog_count": len(backlog),
         "life_blocks_count": len(life_blocks),
+        "life_load_minutes_per_day": load_total,
         "engine_used": engine,
         "model_used": model,
         "plan": plan,

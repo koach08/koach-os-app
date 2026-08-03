@@ -394,6 +394,16 @@ def daily_brief(
         else "(なし)"
     )
 
+    # 9a3. 毎日の生活ロード (子育て・家事など平均負荷) — 空きから先に引く
+    life_load_total = 0
+    life_load_text = "(生活ロード未登録)"
+    try:
+        from routers.productivity import _life_load_summary
+        life_load_total, life_load_text = _life_load_summary()
+    except Exception:
+        pass
+    life_load_hours = round(life_load_total / 60, 1)
+
     # 9b. 今日の状態 (エネルギー) — 出力の強度とトーンを合わせる
     energy_band = "unknown"
     energy_hint = ""
@@ -496,7 +506,11 @@ def daily_brief(
 {energy_text}
 → {energy_directive}
 
+## 毎日の生活ロード（子育て・家事など時間割にできない平均負荷・合計 約{life_load_hours}時間/日）
+{life_load_text}
+
 ## 出力ルール
+- 「今日この時間にこれをやる」を組むとき、上の生活ロードの平均時間を空きから先に差し引いて、現実に収まる範囲だけで提案する。予定の隙間を全部作業で埋めない
 - 冒頭でまず「今日ぜったい落とせない」を提示する（該当あれば）。時刻付きで、すっぽかさないよう念押しする
 - 「日付ズレ疑い」が該当すれば、必ず「この予定、日付が1日ズレていないか確認を」と警告する
 - 予定とバックログを見て「今日この時間にこれをやる」を提案する。時間帯（例: 10:00-11:30）を必ず添える。件数は上の『今日の状態』の指示に従う（平常3つ／低エネルギー最大2つ）

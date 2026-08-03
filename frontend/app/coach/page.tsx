@@ -50,6 +50,23 @@ type LifeBlock = {
   category: Category;
 };
 
+type TimeOfDay = "morning" | "afternoon" | "evening" | "night" | "any";
+type LifeLoad = {
+  id: string;
+  label: string;
+  avg_minutes_per_day: number;
+  time_of_day: TimeOfDay;
+  category: Category;
+};
+
+const TOD_OPTIONS: { id: TimeOfDay; label: string }[] = [
+  { id: "morning", label: "朝" },
+  { id: "afternoon", label: "昼" },
+  { id: "evening", label: "夕方" },
+  { id: "night", label: "夜" },
+  { id: "any", label: "随時" },
+];
+
 const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
 
 const ENGINES = [
@@ -64,6 +81,14 @@ export default function CoachPage() {
 
   const [backlog, setBacklog] = useState<BacklogItem[]>([]);
   const [lifeBlocks, setLifeBlocks] = useState<LifeBlock[]>([]);
+  const [lifeLoad, setLifeLoad] = useState<LifeLoad[]>([]);
+  const [lifeLoadTotal, setLifeLoadTotal] = useState(0);
+  const [newLoad, setNewLoad] = useState<{ label: string; avg_minutes_per_day: number; time_of_day: TimeOfDay; category: Category }>({
+    label: "",
+    avg_minutes_per_day: 60,
+    time_of_day: "any",
+    category: "family",
+  });
   const [plan, setPlan] = useState<string | null>(null);
   const [planMeta, setPlanMeta] = useState<{ calendar_events_count: number; backlog_count: number; engine_used: string } | null>(null);
   type PlannedBlock = { title: string; start_iso: string; end_iso: string; category: Category; description: string };
@@ -116,15 +141,47 @@ export default function CoachPage() {
 
   const loadAll = async () => {
     try {
-      const [bRes, lRes] = await Promise.all([
+      const [bRes, lRes, llRes] = await Promise.all([
         fetch(`${apiBase}/api/productivity/backlog`),
         fetch(`${apiBase}/api/productivity/life-blocks`),
+        fetch(`${apiBase}/api/productivity/life-load`),
       ]);
       setBacklog((await bRes.json()).items ?? []);
       setLifeBlocks((await lRes.json()).items ?? []);
+      const ll = await llRes.json();
+      setLifeLoad(ll.items ?? []);
+      setLifeLoadTotal(ll.total_minutes_per_day ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  };
+
+  const reloadLifeLoad = async () => {
+    const r = await fetch(`${apiBase}/api/productivity/life-load`);
+    const ll = await r.json();
+    setLifeLoad(ll.items ?? []);
+    setLifeLoadTotal(ll.total_minutes_per_day ?? 0);
+  };
+
+  const addLifeLoad = async () => {
+    if (!newLoad.label.trim()) return;
+    await fetch(`${apiBase}/api/productivity/life-load`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newLoad),
+    });
+    setNewLoad({ label: "", avg_minutes_per_day: 60, time_of_day: "any", category: "family" });
+    await reloadLifeLoad();
+  };
+
+  const deleteLifeLoad = async (id: string) => {
+    await fetch(`${apiBase}/api/productivity/life-load/${id}`, { method: "DELETE" });
+    await reloadLifeLoad();
+  };
+
+  const seedLifeLoad = async () => {
+    await fetch(`${apiBase}/api/productivity/life-load/seed`, { method: "POST" });
+    await reloadLifeLoad();
   };
 
   useEffect(() => {
@@ -680,6 +737,66 @@ export default function CoachPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Life Load — 平均負荷 */}
+          <div className="rounded-2xl p-6" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-lg font-semibold">⏳ 毎日の生活ロード (子育て・家事など平均負荷)</h2>
+              {lifeLoad.length === 0 && (
+                <button onClick={seedLifeLoad} className="text-sm underline" style={{ color: "var(--color-accent)" }}>
+                  初期セットを入れる
+                </button>
+              )}
+            </div>
+            <p className="text-sm mb-3" style={{ color: "var(--color-text-muted)" }}>
+              時間割にできない毎日の負荷を「1日平均◯分」で登録します。AI がスケジュールを組むとき、この平均を空きから先に差し引いて現実的に提案します。合計{" "}
+              <span className="font-semibold" style={{ color: "var(--color-text)" }}>
+                約{Math.round((lifeLoadTotal / 60) * 10) / 10} 時間/日
+              </span>
+            </p>
+
+            {lifeLoad.length > 0 && (
+              <div className="grid md:grid-cols-2 gap-2 mb-3">
+                {lifeLoad.map((it) => {
+                  const cm = catMeta(it.category);
+                  return (
+                    <div key={it.id} className="flex items-center gap-2 p-2 rounded-lg"
+                      style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${cm.color}` }}>
+                      <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: "var(--color-surface)" }}>
+                        {it.avg_minutes_per_day}分 · {TOD_OPTIONS.find((t) => t.id === it.time_of_day)?.label}
+                      </span>
+                      <span className="flex-1 text-sm">{cm.emoji} {it.label}</span>
+                      <button onClick={() => deleteLifeLoad(it.id)} className="text-xs" style={{ color: "var(--color-text-muted)" }}>🗑</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex gap-2 items-center flex-wrap">
+              <input type="text" placeholder="例: 子育て" value={newLoad.label}
+                onChange={(e) => setNewLoad({ ...newLoad, label: e.target.value })}
+                className="flex-1 min-w-[120px] px-3 py-2 rounded-lg text-sm"
+                style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
+              <input type="number" min={0} max={1440} step={15} value={newLoad.avg_minutes_per_day}
+                onChange={(e) => setNewLoad({ ...newLoad, avg_minutes_per_day: Number(e.target.value) })}
+                className="w-24 px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }} />
+              <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>分/日</span>
+              <select value={newLoad.time_of_day} onChange={(e) => setNewLoad({ ...newLoad, time_of_day: e.target.value as TimeOfDay })}
+                className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}>
+                {TOD_OPTIONS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+              </select>
+              <select value={newLoad.category} onChange={(e) => setNewLoad({ ...newLoad, category: e.target.value as Category })}
+                className="px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}>
+                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+              </select>
+              <button onClick={addLifeLoad} disabled={!newLoad.label.trim()}
+                className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                style={{ background: "var(--color-accent)", color: "white" }}>
+                追加
+              </button>
+            </div>
           </div>
 
           {/* Generate plan */}

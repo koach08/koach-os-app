@@ -1,9 +1,11 @@
 """
 Assist — 横断アシスト系エンドポイント (既存データを集約して判断を助ける)。
 
-- GET /api/next-action : 今この瞬間にやるべき一手を理由つきで1つ提示 (忖度しない)
-- GET /api/triage      : 対応待ちメール + backlog + 期限切れタスクを1つに集約 (任意で AI 優先順位)
-- GET /api/ai-usage    : worklog の engine タグ + routine 実行から AI 利用状況を集計
+- GET  /api/next-action : 今この瞬間にやるべき一手を理由つきで1つ提示 (忖度しない)
+- GET  /api/triage      : 対応待ちメール + backlog + 期限切れタスクを1つに集約 (任意で AI 優先順位)
+- GET  /api/ai-usage    : worklog の engine タグ + routine 実行から AI 利用状況を集計
+- GET  /api/assist/order: 未対応を全部見て「早く片付けるべき順」を構造化ランキング (利益加点つき)
+- POST /api/assist/plan : 選んだ1件を「最短手順 + 詰まった時の一歩 + 文面案 + 利益への効き」に分解
 
 既存ローダを読むだけ。書き込み・既存ファイルへの干渉なし。
 """
@@ -11,13 +13,34 @@ Assist — 横断アシスト系エンドポイント (既存データを集約�
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 
 from data_manager import now_jst
 from router import call_ai, DEFAULT_MODELS
 
 router = APIRouter()
+
+
+def _parse_json(raw: str):
+    """AI 出力から JSON を頑健に取り出す。```json フェンスや前後の地の文を許容。"""
+    if not raw:
+        return None
+    s = raw.strip()
+    m = re.search(r"```(?:json)?\s*(.+?)\s*```", s, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+    # 最初の { か [ から最後の } か ] までを拾う
+    starts = [i for i in (s.find("{"), s.find("[")) if i >= 0]
+    ends = [i for i in (s.rfind("}"), s.rfind("]")) if i >= 0]
+    if starts and ends:
+        s = s[min(starts): max(ends) + 1]
+    try:
+        return json.loads(s)
+    except Exception:
+        return None
 
 
 # ─── 共通: 文脈収集 ───
@@ -248,4 +271,179 @@ def ai_usage(days: int = Query(90, ge=1, le=3650)):
         "worklog_by_engine": wl_by_engine,
         "worklog_engine_by_category": wl_by_category,
         "routine_runs_by_engine": run_by_engine,
+    }
+
+
+# ─── /assist/order : 早く片付けるべき順 (構造化 + 利益加点) ───
+@router.get("/assist/order")
+def order(engine: str = Query("claude")):
+    """未対応を全部集約し、AI が『早く片付けるべき順』に並べて構造化して返す。
+
+    フロントはこの1件を選んで /assist/plan に渡す想定。
+    頭が混乱している時に『まずどれ』を迷わせないための入口。
+    """
+    now = now_jst()
+    cal = _todays_calendar(remaining_only=True)
+    emails = _pending_emails(20)
+    backlog = _open_backlog(20)
+    tasks = _overdue_tasks(20)
+
+    prompt = (
+        f"今は {now.strftime('%Y-%m-%d %H:%M (%A)')}。以下の散らばった未対応を全部見て、"
+        "『早く片付けるべき順』に並べてください。最大10件。\n\n"
+        f"=== 今日の残り予定 ===\n{json.dumps(cal, ensure_ascii=False)}\n\n"
+        f"=== 対応待ちメール ===\n{json.dumps(emails, ensure_ascii=False)}\n\n"
+        f"=== 未完バックログ ===\n{json.dumps(backlog, ensure_ascii=False)}\n\n"
+        f"=== 期限つきタスク ===\n{json.dumps(tasks, ensure_ascii=False)}\n\n"
+        "次の JSON だけを出力 (前後に地の文を書かない):\n"
+        '{"items":[{"rank":1,"kind":"email|task|backlog","title":"内容(60字以内)",'
+        '"why":"なぜ今か(締切・放置日数・利益を数字で,1行)",'
+        '"is_email":true,"payoff":"money|progress|obligation|none",'
+        '"minutes":15}]}'
+    )
+    system = (
+        "あなたは志柿の相棒 AI。散らばった未対応を俯瞰し『早く片付けるべき順』を決める。\n"
+        "順位の付け方:\n"
+        "- 締切の近さ・放置日数を最優先の根拠にする。数字を引く\n"
+        "- 少額でも利益・前進(収入/掲載/申請/納品)に効くものは順位を上げる。payoff に反映\n"
+        "- 5分で終わる軽いものは、詰まって動けない時の突破口として上位に混ぜてよい\n"
+        "- 迎合しない。先送り常習のものは why で名指しする\n"
+        "- 抽象名詞「〜性」、em ダッシュは使わない。です/ます調"
+    )
+    eng = engine if engine in DEFAULT_MODELS else "claude"
+    items: list[dict] = []
+    err = None
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            engine=eng,
+            model=DEFAULT_MODELS[eng],
+            max_tokens=1200,
+        )
+        parsed = _parse_json(raw)
+        if isinstance(parsed, dict):
+            items = parsed.get("items", []) or []
+        elif isinstance(parsed, list):
+            items = parsed
+    except Exception as e:
+        err = str(e)
+
+    # AI が落ちても最低限は返す (放置日数 → 締切の素朴順)
+    if not items:
+        fallback = []
+        for e in emails[:5]:
+            fallback.append({"kind": "email", "title": e.get("subject", ""),
+                             "why": f"放置 {e.get('days_since', 0)} 日", "is_email": True,
+                             "payoff": "obligation", "minutes": 10})
+        for t in [x for x in tasks if x.get("overdue")][:5]:
+            fallback.append({"kind": "task", "title": t.get("title", ""),
+                             "why": f"期限 {t.get('due_date')} 超過", "is_email": False,
+                             "payoff": "obligation", "minutes": 20})
+        for i, it in enumerate(fallback, 1):
+            it["rank"] = i
+        items = fallback
+
+    return {
+        "generated_at": now.isoformat(),
+        "engine_used": eng,
+        "items": items[:10],
+        "counts": {
+            "remaining_calendar": len(cal),
+            "pending_emails": len(emails),
+            "open_backlog": len(backlog),
+            "overdue_tasks": len([t for t in tasks if t.get("overdue")]),
+        },
+        "error": err,
+    }
+
+
+# ─── /assist/plan : 1件を手順に分解 (詰まった時の一歩・文面・利益つき) ───
+class PlanReq(BaseModel):
+    title: str
+    kind: str = "auto"          # auto | email | task | backlog
+    context: str = ""           # 相手・締切・状況など補足 (任意)
+    is_email: bool | None = None
+    engine: str = "claude"
+
+
+@router.post("/assist/plan")
+def plan(req: PlanReq):
+    """選んだ1件を、そのまま動ける手順に分解して返す。
+
+    - steps       : 最短手順 (詰まらない粒度の番号つき)
+    - first_step  : どうしようもない時に、これだけやればいい最初の一歩
+    - email_draft : メール系なら文面案 (志柿スタイル)
+    - profit_angle: この一手が利益・前進にどう効くか
+    """
+    now = now_jst()
+    is_email = req.is_email
+    if is_email is None:
+        is_email = (req.kind == "email") or bool(
+            re.search(r"メール|返信|連絡|問い合わせ|依頼|お礼|案内|催促", req.title)
+        )
+
+    prompt = (
+        f"次の1件を、そのまま動ける手順に分解してください。\n\n"
+        f"件名/内容: {req.title}\n"
+        f"種別: {req.kind}\n"
+        f"補足: {req.context or '(なし)'}\n"
+        f"メール系か: {'はい' if is_email else 'いいえ'}\n\n"
+        "次の JSON だけを出力 (前後に地の文を書かない):\n"
+        "{\n"
+        '  "first_step": "詰まって動けない時、これだけやればいい最初の一歩(1文,2分以内)",\n'
+        '  "steps": ["手順1","手順2","..."],\n'
+        '  "minutes": 30,\n'
+        '  "watch_out": "詰まりやすい所や注意(1-2行)",\n'
+        '  "profit_angle": "この一手が利益・前進にどう効くか(1-2行)",\n'
+        + ('  "email_draft": "そのまま送れる文面案(件名込み,志柿スタイル)"\n' if is_email else '  "email_draft": null\n')
+        + "}"
+    )
+    system = (
+        "あなたは志柿の実務相棒 AI。頭が混乱している人でも順に動けるよう手順を切る。\n"
+        "ルール:\n"
+        "- steps は『考えずに手が動く』粒度。曖昧語(検討する等)は使わず、具体的な動作にする\n"
+        "- first_step は本当に小さく。動き出せない時の突破口\n"
+        "- profit_angle は現実的に。少額でも前進なら正直に書く。効かないなら「直接の利益は薄い」と言う\n"
+        "- メール系は email_draft をそのまま送れる完成度で。相手が不明なら丁寧側に寄せる\n"
+        "- 文体: です/ます調。一人称は「自分」。抽象名詞「〜性」・em ダッシュ・過度な絵文字は使わない\n"
+        "- 迎合しない。盛らない"
+    )
+    eng = req.engine if req.engine in DEFAULT_MODELS else "claude"
+    err = None
+    parsed = None
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": prompt}],
+            system=system,
+            engine=eng,
+            model=DEFAULT_MODELS[eng],
+            max_tokens=1400,
+        )
+        parsed = _parse_json(raw)
+    except Exception as e:
+        err = str(e)
+
+    if not isinstance(parsed, dict):
+        parsed = {
+            "first_step": "まず件名を1行、白紙に書き出す",
+            "steps": ["対象を1つに絞る", "5分だけ手を付ける", "できた所までで一旦切る"],
+            "minutes": None,
+            "watch_out": "(AI 分解に失敗しました。もう一度試してください)",
+            "profit_angle": None,
+            "email_draft": None,
+        }
+
+    return {
+        "generated_at": now.isoformat(),
+        "engine_used": eng,
+        "title": req.title,
+        "is_email": is_email,
+        "first_step": parsed.get("first_step"),
+        "steps": parsed.get("steps") or [],
+        "minutes": parsed.get("minutes"),
+        "watch_out": parsed.get("watch_out"),
+        "profit_angle": parsed.get("profit_angle"),
+        "email_draft": parsed.get("email_draft"),
+        "error": err,
     }

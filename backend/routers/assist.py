@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from data_manager import now_jst
@@ -446,4 +447,93 @@ def plan(req: PlanReq):
         "profit_angle": parsed.get("profit_angle"),
         "email_draft": parsed.get("email_draft"),
         "error": err,
+    }
+
+
+# ─── /assist/slots : 手順を入れられる空き時間の候補 ───
+@router.get("/assist/slots")
+def slots(minutes: int = Query(30, ge=15, le=480), days_ahead: int = Query(2, ge=0, le=7)):
+    """指定分数が入る空きスロットを近い順で返す。フロントの『いつ入れる?』候補用。"""
+    try:
+        from routers.scheduling import _find_free_slots
+        found = _find_free_slots(days_ahead=days_ahead, min_minutes=minutes)
+    except Exception:
+        found = []
+    return {"generated_at": now_jst().isoformat(), "requested_minutes": minutes, "slots": found[:8]}
+
+
+# ─── /assist/schedule : 手順を時間ブロックとして Calendar に確保 ───
+class ScheduleReq(BaseModel):
+    title: str
+    minutes: int = 30
+    steps: list[str] = []
+    start_iso: str | None = None       # 指定なら固定。無ければ次の空きに自動確保
+    first_step: str | None = None
+    category: str = "default"
+
+
+@router.post("/assist/schedule")
+def schedule(req: ScheduleReq):
+    """順番ナビで分解した手順を、実際に集中ブロックとして Google Calendar に書き込む。
+
+    『見るだけ』で終わらせないための最後の一押し。手順は description に checklist として埋める。
+    書き込みはこの明示操作でだけ起きる。
+    """
+    from gcal import create_event, is_configured
+    if not is_configured():
+        raise HTTPException(status_code=400, detail="calendar not configured")
+
+    mins = max(15, min(req.minutes or 30, 480))
+
+    # 開始時刻: 指定があればそれ、無ければ次の空きスロット
+    start_iso = req.start_iso
+    picked_slot = None
+    if not start_iso:
+        try:
+            from routers.scheduling import _find_free_slots
+            found = _find_free_slots(days_ahead=3, min_minutes=mins)
+        except Exception:
+            found = []
+        if not found:
+            raise HTTPException(status_code=409, detail="空きスロットが見つかりません。start_iso を指定してください")
+        picked_slot = found[0]
+        start_iso = picked_slot["start_iso"]
+
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"start_iso の形式が不正です: {start_iso}")
+    end_dt = start_dt + timedelta(minutes=mins)
+
+    # description に手順チェックリストを埋める
+    lines = ["Koach OS 順番ナビが確保した集中ブロックです。動かして構いません。", ""]
+    if req.first_step:
+        lines += [f"▶ 詰まったらこれだけ: {req.first_step}", ""]
+    if req.steps:
+        lines.append("手順:")
+        lines += [f"☐ {i}. {s}" for i, s in enumerate(req.steps, 1)]
+    description = "\n".join(lines)
+
+    try:
+        ev = create_event(
+            title=f"🧭 {req.title}",
+            start_iso=start_dt.isoformat(),
+            end_iso=end_dt.isoformat(),
+            description=description,
+            event_type="default",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"create_event failed: {e}")
+
+    return {
+        "ok": True,
+        "start_iso": start_dt.isoformat(),
+        "end_iso": end_dt.isoformat(),
+        "minutes": mins,
+        "auto_slot": picked_slot,
+        "event": {
+            "id": ev.get("id"),
+            "html_link": ev.get("htmlLink") or ev.get("html_link"),
+            "summary": ev.get("summary"),
+        },
     }

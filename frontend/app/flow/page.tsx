@@ -34,6 +34,16 @@ type PlanRes = {
   error?: string | null;
 };
 
+type Slot = { date: string; start_iso: string; end_iso: string; minutes: number };
+
+type ScheduleRes = {
+  ok: boolean;
+  start_iso: string;
+  end_iso: string;
+  minutes: number;
+  event: { id?: string; html_link?: string | null; summary?: string };
+};
+
 const PAYOFF: Record<string, { label: string; color: string }> = {
   money: { label: "💰 利益", color: "var(--color-green, #10b981)" },
   progress: { label: "➡ 前進", color: "var(--color-accent, #3b82f6)" },
@@ -51,6 +61,48 @@ export default function FlowPage() {
   const [manual, setManual] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduled, setScheduled] = useState<ScheduleRes | null>(null);
+
+  const fmtSlot = (iso: string) => {
+    const d = new Date(iso);
+    const w = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${d.getMonth() + 1}/${d.getDate()}(${w}) ${hh}:${mm}`;
+  };
+
+  const scheduleBlock = useCallback(
+    (startIso?: string) => {
+      if (!plan) return;
+      setScheduling(true);
+      setError(null);
+      setScheduled(null);
+      fetch("/api/assist/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: plan.title,
+          minutes: plan.minutes || 30,
+          steps: plan.steps,
+          first_step: plan.first_step,
+          start_iso: startIso ?? null,
+        }),
+      })
+        .then(async (r) => {
+          if (!r.ok) {
+            const e = await r.json().catch(() => ({ detail: `API error: ${r.status}` }));
+            throw new Error(e.detail || `API error: ${r.status}`);
+          }
+          return r.json();
+        })
+        .then(setScheduled)
+        .catch((e: Error) => setError(e.message))
+        .finally(() => setScheduling(false));
+    },
+    [plan],
+  );
 
   const loadOrder = useCallback(() => {
     setOrderLoading(true);
@@ -70,6 +122,8 @@ export default function FlowPage() {
       setPlanLoading(true);
       setError(null);
       setCopied(false);
+      setScheduled(null);
+      setSlots([]);
       fetch("/api/assist/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -81,7 +135,14 @@ export default function FlowPage() {
         }),
       })
         .then((r) => r.json())
-        .then(setPlan)
+        .then((d: PlanRes) => {
+          setPlan(d);
+          const m = d.minutes || 30;
+          fetch(`/api/assist/slots?minutes=${m}&days_ahead=3`)
+            .then((r) => r.json())
+            .then((s: { slots: Slot[] }) => setSlots(s.slots || []))
+            .catch(() => setSlots([]));
+        })
         .catch((e: Error) => setError(e.message))
         .finally(() => setPlanLoading(false));
     },
@@ -259,6 +320,55 @@ export default function FlowPage() {
                       </ol>
                     </div>
                   )}
+
+                  {/* カレンダーに集中ブロックとして確保 */}
+                  <div className="rounded-2xl p-5" style={card}>
+                    <div className="text-[11px] font-medium mb-2" style={{ color: "var(--color-text-muted)" }}>
+                      カレンダーに入れる（{plan.minutes || 30}分の集中ブロック・手順つき）
+                    </div>
+                    {scheduled ? (
+                      <div className="text-sm leading-relaxed" style={{ color: "var(--color-green, #10b981)" }}>
+                        ✓ {fmtSlot(scheduled.start_iso)} に確保しました（{scheduled.minutes}分）
+                        {scheduled.event.html_link && (
+                          <>
+                            {" · "}
+                            <a href={scheduled.event.html_link} target="_blank" rel="noreferrer" className="underline">
+                              カレンダーで開く
+                            </a>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => scheduleBlock()}
+                            disabled={scheduling}
+                            className="px-4 py-2 rounded-full text-sm font-medium disabled:opacity-50"
+                            style={{ background: "var(--color-green, #10b981)", color: "white" }}
+                          >
+                            {scheduling ? "確保中..." : "次の空きに入れる"}
+                          </button>
+                          {slots.map((s) => (
+                            <button
+                              key={s.start_iso}
+                              onClick={() => scheduleBlock(s.start_iso)}
+                              disabled={scheduling}
+                              className="px-3 py-2 rounded-full text-xs disabled:opacity-50"
+                              style={{ background: "var(--color-surface-hover, rgba(255,255,255,0.06))", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                            >
+                              {fmtSlot(s.start_iso)}
+                            </button>
+                          ))}
+                        </div>
+                        {slots.length === 0 && (
+                          <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                            空き候補を読み込み中、または直近に空きが見つかりません（「次の空きに入れる」は3日先まで探します）
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   {/* 利益への効き */}
                   {plan.profit_angle && (

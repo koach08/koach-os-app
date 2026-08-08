@@ -275,13 +275,14 @@ def ai_usage(days: int = Query(90, ge=1, le=3650)):
     }
 
 
-# ─── /assist/order : 早く片付けるべき順 (構造化 + 利益加点) ───
+# ─── /assist/order : 早く片付けるべき順 (構造化) ───
 @router.get("/assist/order")
-def order(engine: str = Query("claude")):
+def order(engine: str = Query("claude"), business: bool = Query(False)):
     """未対応を全部集約し、AI が『早く片付けるべき順』に並べて構造化して返す。
 
     フロントはこの1件を選んで /assist/plan に渡す想定。
     頭が混乱している時に『まずどれ』を迷わせないための入口。
+    business=True の時だけ、利益・収益の視点を順位づけに足す (ビジネス相談モード)。
     """
     now = now_jst()
     cal = _todays_calendar(remaining_only=True)
@@ -289,6 +290,7 @@ def order(engine: str = Query("claude")):
     backlog = _open_backlog(20)
     tasks = _overdue_tasks(20)
 
+    why_hint = "締切・放置日数を数字で" + ("、収益に効くなら一言" if business else "")
     prompt = (
         f"今は {now.strftime('%Y-%m-%d %H:%M (%A)')}。以下の散らばった未対応を全部見て、"
         "『早く片付けるべき順』に並べてください。最大10件。\n\n"
@@ -298,15 +300,20 @@ def order(engine: str = Query("claude")):
         f"=== 期限つきタスク ===\n{json.dumps(tasks, ensure_ascii=False)}\n\n"
         "次の JSON だけを出力 (前後に地の文を書かない):\n"
         '{"items":[{"rank":1,"kind":"email|task|backlog","title":"内容(60字以内)",'
-        '"why":"なぜ今か(締切・放置日数・利益を数字で,1行)",'
-        '"is_email":true,"payoff":"money|progress|obligation|none",'
+        f'"why":"なぜ今か({why_hint},1行)",'
+        '"is_email":true,"payoff":"' + ("money|progress|obligation|none" if business else "progress|obligation|none") + '",'
         '"minutes":15}]}'
+    )
+    payoff_rule = (
+        "- 少額でも利益・収益(収入/掲載/受注/納品)に効くものは順位を上げる。payoff に反映\n"
+        if business else
+        "- 順位の根拠は締切と放置日数だけ。利益や金の話は持ち出さない。payoff に money は使わない\n"
     )
     system = (
         "あなたは志柿の相棒 AI。散らばった未対応を俯瞰し『早く片付けるべき順』を決める。\n"
         "順位の付け方:\n"
         "- 締切の近さ・放置日数を最優先の根拠にする。数字を引く\n"
-        "- 少額でも利益・前進(収入/掲載/申請/納品)に効くものは順位を上げる。payoff に反映\n"
+        + payoff_rule +
         "- 5分で終わる軽いものは、詰まって動けない時の突破口として上位に混ぜてよい\n"
         "- 迎合しない。先送り常習のものは why で名指しする\n"
         "- 抽象名詞「〜性」、em ダッシュは使わない。です/ます調"
@@ -359,12 +366,13 @@ def order(engine: str = Query("claude")):
     }
 
 
-# ─── /assist/plan : 1件を手順に分解 (詰まった時の一歩・文面・利益つき) ───
+# ─── /assist/plan : 1件を手順に分解 (詰まった時の一歩・文面) ───
 class PlanReq(BaseModel):
     title: str
     kind: str = "auto"          # auto | email | task | backlog
     context: str = ""           # 相手・締切・状況など補足 (任意)
     is_email: bool | None = None
+    business: bool = False       # ビジネス相談モード。True の時だけ利益の視点を足す
     engine: str = "claude"
 
 
@@ -375,7 +383,7 @@ def plan(req: PlanReq):
     - steps       : 最短手順 (詰まらない粒度の番号つき)
     - first_step  : どうしようもない時に、これだけやればいい最初の一歩
     - email_draft : メール系なら文面案 (志柿スタイル)
-    - profit_angle: この一手が利益・前進にどう効くか
+    - profit_angle: business=True の時だけ。この一手が利益・収益にどう効くか (それ以外は null)
     """
     now = now_jst()
     is_email = req.is_email
@@ -396,16 +404,21 @@ def plan(req: PlanReq):
         '  "steps": ["手順1","手順2","..."],\n'
         '  "minutes": 30,\n'
         '  "watch_out": "詰まりやすい所や注意(1-2行)",\n'
-        '  "profit_angle": "この一手が利益・前進にどう効くか(1-2行)",\n'
+        + ('  "profit_angle": "この一手が利益・収益にどう効くか(1-2行)",\n' if req.business else '')
         + ('  "email_draft": "そのまま送れる文面案(件名込み,志柿スタイル)"\n' if is_email else '  "email_draft": null\n')
         + "}"
+    )
+    profit_rule = (
+        "- profit_angle は現実的に。少額でも前進なら正直に書く。効かないなら「直接の利益は薄い」と言う\n"
+        if req.business else
+        "- 利益や金の話は一切書かない。手順と一歩だけに集中する\n"
     )
     system = (
         "あなたは志柿の実務相棒 AI。頭が混乱している人でも順に動けるよう手順を切る。\n"
         "ルール:\n"
         "- steps は『考えずに手が動く』粒度。曖昧語(検討する等)は使わず、具体的な動作にする\n"
         "- first_step は本当に小さく。動き出せない時の突破口\n"
-        "- profit_angle は現実的に。少額でも前進なら正直に書く。効かないなら「直接の利益は薄い」と言う\n"
+        + profit_rule +
         "- メール系は email_draft をそのまま送れる完成度で。相手が不明なら丁寧側に寄せる\n"
         "- 文体: です/ます調。一人称は「自分」。抽象名詞「〜性」・em ダッシュ・過度な絵文字は使わない\n"
         "- 迎合しない。盛らない"
@@ -444,7 +457,8 @@ def plan(req: PlanReq):
         "steps": parsed.get("steps") or [],
         "minutes": parsed.get("minutes"),
         "watch_out": parsed.get("watch_out"),
-        "profit_angle": parsed.get("profit_angle"),
+        # ビジネス相談モードの時だけ利益の視点を返す。それ以外は必ず null
+        "profit_angle": parsed.get("profit_angle") if req.business else None,
         "email_draft": parsed.get("email_draft"),
         "error": err,
     }

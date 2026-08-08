@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 // 早く片付けるべき順の1件
 type OrderItem = {
@@ -59,11 +59,21 @@ export default function FlowPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [panic, setPanic] = useState(false);
   const [manual, setManual] = useState("");
+  const [business, setBusiness] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [scheduling, setScheduling] = useState(false);
   const [scheduled, setScheduled] = useState<ScheduleRes | null>(null);
+
+  // ビジネス相談モードは端末に覚えておく（毎回 OFF から始めるのが既定）
+  useEffect(() => {
+    setBusiness(localStorage.getItem("flow_business") === "1");
+  }, []);
+  const toggleBusiness = (v: boolean) => {
+    setBusiness(v);
+    localStorage.setItem("flow_business", v ? "1" : "0");
+  };
 
   const fmtSlot = (iso: string) => {
     const d = new Date(iso);
@@ -107,12 +117,12 @@ export default function FlowPage() {
   const loadOrder = useCallback(() => {
     setOrderLoading(true);
     setError(null);
-    fetch("/api/assist/order")
+    fetch(`/api/assist/order?business=${business}`)
       .then((r) => r.json())
       .then(setOrder)
       .catch((e: Error) => setError(e.message))
       .finally(() => setOrderLoading(false));
-  }, []);
+  }, [business]);
 
   const makePlan = useCallback(
     (item: { title: string; kind?: string; is_email?: boolean; context?: string }) => {
@@ -132,6 +142,7 @@ export default function FlowPage() {
           kind: item.kind ?? "auto",
           is_email: item.is_email ?? null,
           context: item.context ?? "",
+          business,
         }),
       })
         .then((r) => r.json())
@@ -146,7 +157,7 @@ export default function FlowPage() {
         .catch((e: Error) => setError(e.message))
         .finally(() => setPlanLoading(false));
     },
-    [],
+    [business],
   );
 
   const card = {
@@ -169,7 +180,7 @@ export default function FlowPage() {
             順番ナビ
           </h1>
           <p className="mt-2 text-sm" style={{ color: "var(--color-text-muted)" }}>
-            重なって混乱した時に。まず片付ける順を並べ、選んだ1件を「そのまま動ける手順」に分解します。詰まったら一歩だけ表示
+            重なって散らからないために。考える負担を減らして、まず片付ける順を並べ、選んだ1件を「そのまま動ける手順」に分解します。詰まったら一歩だけ表示。ここを片付けて、本当にやりたい事に集中するための道具です
           </p>
         </div>
       </div>
@@ -189,6 +200,10 @@ export default function FlowPage() {
             <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: "var(--color-text-muted)" }}>
               <input type="checkbox" checked={panic} onChange={(e) => setPanic(e.target.checked)} />
               パニックモード（一歩だけ表示）
+            </label>
+            <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: business ? "var(--color-green, #10b981)" : "var(--color-text-muted)" }}>
+              <input type="checkbox" checked={business} onChange={(e) => toggleBusiness(e.target.checked)} />
+              💰 ビジネス相談モード（利益の視点を足す）
             </label>
             {order && (
               <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
@@ -230,7 +245,8 @@ export default function FlowPage() {
                 早く片付けるべき順（クリックで手順に分解）
               </p>
               {order.items.map((it, i) => {
-                const po = PAYOFF[it.payoff ?? "none"] ?? PAYOFF.none;
+                const payoff = it.payoff === "money" && !business ? "none" : it.payoff ?? "none";
+                const po = PAYOFF[payoff] ?? PAYOFF.none;
                 const active = selected === it.title;
                 return (
                   <button

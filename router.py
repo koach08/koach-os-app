@@ -100,7 +100,7 @@ TASK_TYPE_KEYWORDS = {
 
 # Default models per engine
 DEFAULT_MODELS = {
-    "claude": "claude-opus-4-8",
+    "claude": "claude-opus-5",
     "gpt": "gpt-5.5",
     "grok": "grok-4",
     "gemini": "gemini-3.1-pro-preview",
@@ -114,9 +114,10 @@ DEFAULT_MODELS = {
 # Available models for settings UI
 AVAILABLE_MODELS = {
     "claude": [
-        ("claude-opus-4-8", "Claude Opus 4.8 (最新・最高性能 $5/$25)"),
-        ("claude-opus-4-7", "Claude Opus 4.7 (前世代 $5/$25)"),
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6 (バランス $3/$15)"),
+        ("claude-opus-5", "Claude Opus 5 (最新・最高性能 $5/$25)"),
+        ("claude-opus-4-8", "Claude Opus 4.8 (前世代 $5/$25)"),
+        ("claude-sonnet-5", "Claude Sonnet 5 (バランス)"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 (前世代 $3/$15)"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 (高速・低コスト $1/$5)"),
     ],
     "gpt": [

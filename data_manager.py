@@ -182,6 +182,8 @@ COSTS_FILE = DATA_DIR / "api_costs.jsonl"
 
 # Pricing per million tokens (input_usd, output_usd)
 API_PRICING = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
     "claude-opus-4-6": (5.0, 25.0),

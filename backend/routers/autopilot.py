@@ -336,7 +336,7 @@ def _job_backlog_progress(max_items: int, model: str) -> dict:
 BRAIN_SCAN_ENGINE = "gemini"
 BRAIN_SCAN_MODEL = "gemini-3.1-pro-preview"
 BRAIN_REFINE_ENGINE = "claude"
-BRAIN_REFINE_MODEL = "claude-opus-4-8"
+BRAIN_REFINE_MODEL = "claude-opus-5"
 
 
 def _gather_brain_corpus(max_chars: int = 120_000) -> tuple[str, dict]:

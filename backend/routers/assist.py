@@ -464,6 +464,143 @@ def plan(req: PlanReq):
     }
 
 
+# ─── /assist/adhd-reflect : ADHD傾向の自己スクリーニング (診断ではない) ───
+# ベースは ASRS v1.1 (成人ADHD自己記入式スクリーニング) Part A の6項目。
+# スコア判定は決定的に行い、AI は個別の強み・対策の言語化だけ担う。
+ASRS_QUESTIONS = [
+    "物事の難しい部分が終わったあと、詰めの仕上げをやり遂げるのに苦労する",
+    "計画性を要する作業で、順序立てて進めるのが難しい",
+    "約束や締切、やるべき用事を忘れる",
+    "じっくり考える必要がある課題を、取りかかるのを避けたり後回しにする",
+    "長時間座っていると、手足をそわそわ・もぞもぞ動かす",
+    "エンジンで動かされているように過度に活動的で、じっとしていられない",
+]
+# 各項目「シェード(該当)」しきい値: Q1-3 は2(時々)以上、Q4-6 は3(頻繁)以上
+ASRS_SHADE_THRESHOLD = [2, 2, 2, 3, 3, 3]
+ASRS_SCALE = ["全くない", "めったにない", "時々", "頻繁", "非常に頻繁"]
+
+
+class AdhdReflectReq(BaseModel):
+    scores: list[int] = []      # 6項目、各 0-4
+    notes: str = ""             # 自由記述 (任意)
+    engine: str = "claude"
+
+
+@router.post("/assist/adhd-reflect")
+def adhd_reflect(req: AdhdReflectReq):
+    """ASRS 6項目の回答から傾向を返す。医学的診断ではなく自己理解のための目安。"""
+    scores = (req.scores + [0] * 6)[:6]
+    scores = [max(0, min(int(s), 4)) for s in scores]
+    shaded = [scores[i] >= ASRS_SHADE_THRESHOLD[i] for i in range(6)]
+    shaded_count = sum(shaded)
+    # ASRS Part A: 6項目中4つ以上がシェード → さらなる評価を検討する価値あり
+    consistent = shaded_count >= 4
+    band = "傾向あり(要検討)" if consistent else ("やや傾向あり" if shaded_count >= 2 else "傾向は目立たない")
+
+    detail = "\n".join(
+        f"- {ASRS_QUESTIONS[i]}: {ASRS_SCALE[scores[i]]}{' [該当]' if shaded[i] else ''}"
+        for i in range(6)
+    )
+    prompt = (
+        f"以下は志柿さんの ASRS(成人ADHD自己記入式スクリーナー)6項目への回答です。\n"
+        f"シェード該当 {shaded_count}/6 ({'ADHD傾向と矛盾しない水準' if consistent else '基準未満'})。\n\n"
+        f"{detail}\n\n"
+        f"自由記述: {req.notes or '(なし)'}\n\n"
+        "この回答パターンだけを根拠に、次の JSON を出力 (前後に地の文なし):\n"
+        '{"summary":"回答から読み取れる傾向を2-3文。断定や診断はしない",'
+        '"strengths":["この傾向が強みに転じる場面(具体,2-3個)"],'
+        '"challenges":["日常で詰まりやすい場面(回答に沿って具体,2-3個)"],'
+        '"strategies":["負担を減らす具体策(2分で始められる粒度で3-5個。koach osの順番ナビ/カレンダー確保に繋げてよい)"]}'
+    )
+    system = (
+        "あなたは志柿の相棒 AI。ADHD傾向の自己理解を手伝う。医者ではない。\n"
+        "- 診断名の断定や『あなたはADHDです』という言い方は絶対にしない。あくまで回答パターンの範囲で話す\n"
+        "- 欠点探しにしない。傾向を強みに変える視点を必ず入れる\n"
+        "- strategies は考える負担を減らす方向。選択肢を増やす助言はしない\n"
+        "- 抽象名詞「〜性」、em ダッシュ、過度な絵文字は使わない。です/ます調。一人称は「自分」"
+    )
+    eng = req.engine if req.engine in DEFAULT_MODELS else "claude"
+    parsed = None
+    err = None
+    try:
+        raw = call_ai(
+            messages=[{"role": "user", "content": prompt}],
+            system=system, engine=eng, model=DEFAULT_MODELS[eng], max_tokens=1200,
+        )
+        parsed = _parse_json(raw)
+    except Exception as e:
+        err = str(e)
+    if not isinstance(parsed, dict):
+        parsed = {"summary": "(AI 生成に失敗しました。スコア判定は下の band を参照してください)",
+                  "strengths": [], "challenges": [], "strategies": []}
+
+    return {
+        "generated_at": now_jst().isoformat(),
+        "engine_used": eng,
+        "shaded_count": shaded_count,
+        "consistent_with_adhd": consistent,
+        "band": band,
+        "scores": scores,
+        "summary": parsed.get("summary"),
+        "strengths": parsed.get("strengths") or [],
+        "challenges": parsed.get("challenges") or [],
+        "strategies": parsed.get("strategies") or [],
+        "disclaimer": (
+            "これは ASRS v1.1 を基にした自己スクリーニングで、医学的な診断ではありません。"
+            "気になる場合は精神科・心療内科など専門家にご相談ください。"
+        ),
+        "error": err,
+    }
+
+
+class AdhdConsultReq(BaseModel):
+    question: str = ""
+    profile: str = ""           # adhd-reflect の summary/strategies など (フロントが渡す)
+    engine: str = "claude"
+
+
+@router.post("/assist/adhd-consult")
+def adhd_consult(req: AdhdConsultReq):
+    """自己理解の傾向を踏まえ、今の実際の負荷を見て『今すべきこと』を相談する。"""
+    now = now_jst()
+    cal = _todays_calendar(remaining_only=True)
+    emails = _pending_emails(8)
+    tasks = _overdue_tasks(8)
+
+    prompt = (
+        f"今は {now.strftime('%Y-%m-%d %H:%M (%A)')}。\n\n"
+        f"=== 自分の傾向(自己理解) ===\n{req.profile or '(未記入)'}\n\n"
+        f"=== 今の残り予定 ===\n{json.dumps(cal, ensure_ascii=False)}\n\n"
+        f"=== 対応待ちメール ===\n{json.dumps(emails, ensure_ascii=False)}\n\n"
+        f"=== 期限つきタスク ===\n{json.dumps(tasks, ensure_ascii=False)}\n\n"
+        f"=== 相談 ===\n{req.question or '今、何から手を付ければいい?'}\n"
+    )
+    system = (
+        "あなたは志柿の相棒 AI。ADHD傾向を持つ本人が混乱しないよう伴走する。\n"
+        "答え方:\n"
+        "- まず『今やる1つ』だけを明確に。選択肢を並べて迷わせない\n"
+        "- そのあと理由を1-2行、続けて残りは順番だけ簡潔に\n"
+        "- 傾向(先延ばし・段取り・忘れ等)に配慮し、詰まらない粒度で\n"
+        "- 締切・放置日数の数字を根拠に。迎合しない\n"
+        "- 抽象名詞「〜性」、em ダッシュ、過度な絵文字は使わない。です/ます調。一人称は「自分」"
+    )
+    eng = req.engine if req.engine in DEFAULT_MODELS else "claude"
+    try:
+        out = call_ai(
+            messages=[{"role": "user", "content": prompt}],
+            system=system, engine=eng, model=DEFAULT_MODELS[eng], max_tokens=900,
+        )
+    except Exception as e:
+        out = f"(AI 生成失敗: {e})"
+    return {"generated_at": now.isoformat(), "engine_used": eng, "answer": out}
+
+
+# ─── /assist/questions : ADHD自己チェックの設問を返す (フロント表示用) ───
+@router.get("/assist/adhd-questions")
+def adhd_questions():
+    return {"questions": ASRS_QUESTIONS, "scale": ASRS_SCALE}
+
+
 # ─── /assist/slots : 手順を入れられる空き時間の候補 ───
 @router.get("/assist/slots")
 def slots(minutes: int = Query(30, ge=15, le=480), days_ahead: int = Query(2, ge=0, le=7)):

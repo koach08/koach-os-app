@@ -263,7 +263,7 @@ def auto_reschedule(
                 "迎合せず、 必要なら厳しい指摘もする。 抽象名詞「〜性」、 過度な絵文字、 です/ます調連打は避ける。"
             ),
             engine="claude",
-            model="claude-opus-4-8",
+            model="claude-opus-5",
             max_tokens=1500,
         )
     except Exception as e:

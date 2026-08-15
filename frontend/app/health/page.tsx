@@ -1,0 +1,329 @@
+"use client";
+
+/**
+ * 健康・コンディション — Apple Watch / Health の数値を眺める画面。
+ * データの入口は iOS ショートカット + オートメーション (毎朝自動 POST /api/health-data)。
+ * この画面は「見るだけ」が主。手入力は保険 (自動が回れば触らない)。
+ * 受け皿・保存・state-hint はバックエンド実装済み (backend/routers/health_intake.py)。
+ */
+
+import { useCallback, useEffect, useState } from "react";
+
+type HealthEntry = {
+  date: string;
+  sleep_hours: number | null;
+  steps: number | null;
+  resting_hr: number | null;
+  hrv_ms: number | null;
+  workout_minutes: number | null;
+  energy_self: number | null;
+  note?: string;
+  received_at?: string;
+};
+
+type Recent = { days: number; items: HealthEntry[] };
+type Hint = { hint: string; energy_band: string };
+
+function bandColor(band: string): string {
+  return band === "low" ? "#ef4444" : band === "high" ? "#10b981" : "var(--color-text-muted)";
+}
+
+function bandLabel(band: string): string {
+  return band === "low" ? "低め" : band === "high" ? "高め" : band === "neutral" ? "ふつう" : "—";
+}
+
+function fmt(n: number | null | undefined, digits = 0): string {
+  if (n === null || n === undefined) return "—";
+  return digits > 0 ? n.toFixed(digits) : String(n);
+}
+
+function weekday(dateStr: string): string {
+  // dateStr は YYYY-MM-DD。曜日をローカル計算 (UTC 正午で日付ズレ回避)。
+  try {
+    const d = new Date(`${dateStr}T12:00:00+09:00`);
+    return ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+  } catch {
+    return "";
+  }
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div
+      className="rounded-2xl p-4 flex flex-col gap-1"
+      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+    >
+      <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+        {label}
+      </span>
+      <span className="text-2xl font-semibold tabular-nums">{value}</span>
+      {sub && (
+        <span className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+          {sub}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export default function HealthPage() {
+  const [hint, setHint] = useState<Hint | null>(null);
+  const [recent, setRecent] = useState<Recent | null>(null);
+  const [days, setDays] = useState(7);
+  const [loading, setLoading] = useState(true);
+
+  // 手入力 (任意・保険)
+  const [showForm, setShowForm] = useState(false);
+  const [sleep, setSleep] = useState("");
+  const [steps, setSteps] = useState("");
+  const [hr, setHr] = useState("");
+  const [energy, setEnergy] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      fetch("/api/health-data/state-hint")
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      fetch(`/api/health-data/recent?days=${days}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ])
+      .then(([h, rec]) => {
+        setHint(h);
+        setRecent(rec);
+      })
+      .finally(() => setLoading(false));
+  }, [days]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function submit() {
+    const body: Record<string, number> = {};
+    if (sleep.trim() !== "") body.sleep_hours = parseFloat(sleep);
+    if (steps.trim() !== "") body.steps = parseInt(steps, 10);
+    if (hr.trim() !== "") body.resting_hr = parseInt(hr, 10);
+    if (energy.trim() !== "") body.energy_self = parseInt(energy, 10);
+    if (Object.keys(body).length === 0) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      const r = await fetch("/api/health-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        setSaved(true);
+        setSleep("");
+        setSteps("");
+        setHr("");
+        setEnergy("");
+        load();
+        setTimeout(() => setSaved(false), 2500);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const items = recent?.items ? [...recent.items].reverse() : []; // 新しい日を上に
+  const today = items[0];
+  const hasToday =
+    today &&
+    today.date === (recent?.items.slice(-1)[0]?.date ?? "") &&
+    (today.sleep_hours != null || today.steps != null || today.energy_self != null);
+
+  return (
+    <main className="max-w-3xl mx-auto px-5 py-8 space-y-6">
+      <header className="space-y-2">
+        <h1 className="text-2xl font-semibold flex items-center gap-2">
+          <span>❤️</span> 健康・コンディション
+        </h1>
+        <p className="text-sm leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+          Apple Watch / Health の睡眠・歩数・心拍を眺める画面です。データは iPhone のショートカットが毎朝自動で送ります。
+          ここは基本「見るだけ」。疲れている日は Daily / Evening のトーンが自動でやわらぎます。
+        </p>
+      </header>
+
+      {/* 今日のコンディション */}
+      <section
+        className="rounded-3xl p-5 space-y-3"
+        style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold" style={{ color: "var(--color-text-muted)" }}>
+            今日のコンディション
+          </span>
+          {hint && (
+            <span
+              className="text-xs font-semibold rounded-full px-3 py-1"
+              style={{ color: "#fff", background: bandColor(hint.energy_band) }}
+            >
+              エネルギー {bandLabel(hint.energy_band)}
+            </span>
+          )}
+        </div>
+        {hint?.hint ? (
+          <p className="text-base leading-relaxed" style={{ color: bandColor(hint.energy_band) }}>
+            📊 {hint.hint}
+          </p>
+        ) : (
+          <p className="text-sm leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+            今日のデータはまだありません。iPhone のショートカット (毎朝の自動送信) を仕込むと、開くだけでここに出ます。
+            今すぐ試すなら下の「手で入れる」から。
+          </p>
+        )}
+      </section>
+
+      {/* 期間切り替え */}
+      <div className="flex gap-1.5">
+        {[7, 14, 30].map((d) => (
+          <button
+            key={d}
+            onClick={() => setDays(d)}
+            className="text-xs rounded-full px-3 py-1"
+            style={{
+              background: days === d ? "var(--color-accent)" : "var(--color-surface)",
+              color: days === d ? "#fff" : "var(--color-text-muted)",
+              border: "1px solid var(--color-border)",
+            }}
+          >
+            {d}日
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+          読み込み中...
+        </p>
+      ) : items.length === 0 ? (
+        <div
+          className="rounded-2xl p-5 text-sm leading-relaxed"
+          style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
+        >
+          まだ記録がありません。iPhone 側の自動送信を仕込むか、下の「手で入れる」で 1 件入れてみてください。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((e) => (
+            <div
+              key={e.date}
+              className="rounded-2xl px-4 py-3 flex items-center gap-4 flex-wrap"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            >
+              <span className="text-sm font-semibold tabular-nums" style={{ minWidth: "92px" }}>
+                {e.date.slice(5)} ({weekday(e.date)})
+              </span>
+              <span className="text-sm tabular-nums" style={{ color: "var(--color-text-muted)" }}>
+                😴 {fmt(e.sleep_hours, 1)}h
+              </span>
+              <span className="text-sm tabular-nums" style={{ color: "var(--color-text-muted)" }}>
+                👟 {e.steps != null ? e.steps.toLocaleString() : "—"}
+              </span>
+              <span className="text-sm tabular-nums" style={{ color: "var(--color-text-muted)" }}>
+                💓 {fmt(e.resting_hr)}
+              </span>
+              {e.workout_minutes != null && e.workout_minutes > 0 && (
+                <span className="text-sm tabular-nums" style={{ color: "var(--color-text-muted)" }}>
+                  🏃 {e.workout_minutes}分
+                </span>
+              )}
+              {e.energy_self != null && (
+                <span className="text-sm tabular-nums" style={{ color: "var(--color-text-muted)" }}>
+                  ⚡ {e.energy_self}/5
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* まとめ (期間の平均) */}
+      {items.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {(() => {
+            const avg = (key: keyof HealthEntry, digits = 0) => {
+              const vals = items.map((e) => e[key]).filter((v): v is number => typeof v === "number");
+              if (vals.length === 0) return "—";
+              const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+              return digits > 0 ? m.toFixed(digits) : String(Math.round(m));
+            };
+            return (
+              <>
+                <Stat label={`平均睡眠 (${days}日)`} value={`${avg("sleep_hours", 1)}h`} />
+                <Stat label={`平均歩数 (${days}日)`} value={avg("steps")} />
+                <Stat label={`平均安静時心拍 (${days}日)`} value={avg("resting_hr")} />
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* 手入力 (任意・保険) */}
+      <section className="pt-2">
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="text-xs rounded-full px-3 py-1.5"
+          style={{ background: "var(--color-surface)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+        >
+          {showForm ? "手入力を閉じる" : "＋ 手で入れる (任意)"}
+        </button>
+        {showForm && (
+          <div
+            className="mt-3 rounded-2xl p-4 space-y-3"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+          >
+            <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+              自動送信が回れば普段は不要です。Health アプリを見ながら、入れたい欄だけ埋めてください (空欄はスキップ)。今日として保存されます。
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: "睡眠 (h)", val: sleep, set: setSleep, ph: "6.5", step: "0.1" },
+                { label: "歩数", val: steps, set: setSteps, ph: "8000", step: "1" },
+                { label: "安静時心拍", val: hr, set: setHr, ph: "60", step: "1" },
+                { label: "エネルギー 1-5", val: energy, set: setEnergy, ph: "3", step: "1" },
+              ].map((f) => (
+                <label key={f.label} className="flex flex-col gap-1">
+                  <span className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                    {f.label}
+                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step={f.step}
+                    placeholder={f.ph}
+                    value={f.val}
+                    onChange={(ev) => f.set(ev.target.value)}
+                    className="rounded-lg px-3 py-2 text-sm tabular-nums"
+                    style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={submit}
+                disabled={saving}
+                className="text-sm rounded-lg px-4 py-2 font-semibold"
+                style={{ background: "var(--color-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
+              >
+                {saving ? "保存中..." : "保存"}
+              </button>
+              {saved && (
+                <span className="text-xs" style={{ color: "#10b981" }}>
+                  保存しました
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}

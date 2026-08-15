@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { href: "/self-check", label: "自己理解と相談", icon: "🧩" },
   { href: "/daily", label: "Daily", icon: "🌅" },
   { href: "/evening", label: "Evening", icon: "🌙" },
+  { href: "/health", label: "健康", icon: "❤️" },
   { href: "/triage", label: "未対応の棚卸し", icon: "🗒" },
   { href: "/ai-usage", label: "AI利用", icon: "📊" },
   { href: "/coach", label: "コーチ", icon: "🧭" },

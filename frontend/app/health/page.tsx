@@ -81,6 +81,10 @@ export default function HealthPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  // iPhone 側の設定手順 (初回だけ開く)
+  const [showSetup, setShowSetup] = useState(false);
+  const [copied, setCopied] = useState(false);
+
   const load = useCallback(() => {
     setLoading(true);
     Promise.all([
@@ -131,7 +135,20 @@ export default function HealthPage() {
     }
   }
 
-  const items = recent?.items ? [...recent.items].reverse() : []; // 新しい日を上に
+  // 新しい日を上に。中身が空の日 (送信だけされて数値ゼロ件) は並べない。
+  const items = recent?.items
+    ? [...recent.items]
+        .filter(
+          (e) =>
+            e.sleep_hours != null ||
+            e.steps != null ||
+            e.resting_hr != null ||
+            e.hrv_ms != null ||
+            e.workout_minutes != null ||
+            e.energy_self != null,
+        )
+        .reverse()
+    : [];
   const today = items[0];
   const hasToday =
     today &&
@@ -264,6 +281,89 @@ export default function HealthPage() {
           })()}
         </div>
       )}
+
+      {/* iPhone 側の設定 (初回1回だけ) */}
+      <section className="pt-2">
+        <button
+          onClick={() => setShowSetup((v) => !v)}
+          className="text-xs rounded-full px-3 py-1.5"
+          style={{ background: "var(--color-surface)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+        >
+          {showSetup ? "設定手順を閉じる" : "📱 iPhone から自動で送る設定 (初回だけ)"}
+        </button>
+        {showSetup && (
+          <div
+            className="mt-3 rounded-2xl p-4 space-y-4 text-sm leading-relaxed"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+          >
+            <p style={{ color: "var(--color-text-muted)" }}>
+              一度だけ設定すれば、あとは毎朝勝手に送られます。日々の入力は不要です。
+            </p>
+
+            <div className="space-y-2">
+              <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                送信先 URL (ショートカットに貼る)
+              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <code
+                  className="text-xs rounded-lg px-3 py-2 break-all"
+                  style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+                >
+                  https://koach-os.vercel.app/api/health-data
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText("https://koach-os.vercel.app/api/health-data");
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                  className="text-xs rounded-lg px-3 py-2"
+                  style={{ background: "var(--color-accent)", color: "#fff" }}
+                >
+                  {copied ? "コピーしました" : "コピー"}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                手順 (ショートカット App)
+              </span>
+              <ol className="space-y-1.5 list-decimal pl-5" style={{ color: "var(--color-text-muted)" }}>
+                <li>「ショートカット」App → 新規作成</li>
+                <li>
+                  <b>ヘルスサンプルを検索</b> → 種類「歩数」、期間「今日」、まとめ方「合計」
+                </li>
+                <li>
+                  <b>ヘルスサンプルを検索</b> → 種類「睡眠」、期間「今日」。秒で返るので{" "}
+                  <b>計算</b> アクションで ÷ 3600 して時間にします
+                </li>
+                <li>
+                  <b>URL の内容を取得</b> → 上の URL / 方法 <b>POST</b> / ヘッダ{" "}
+                  <code className="text-[11px]">Content-Type: application/json</code> / 本文は <b>JSON</b>
+                </li>
+                <li>
+                  JSON の中身は{" "}
+                  <code className="text-[11px]">
+                    {`{"sleep_hours": <睡眠>, "steps": <歩数>}`}
+                  </code>{" "}
+                  (入れたい項目だけで可)
+                </li>
+                <li>
+                  「オートメーション」タブ → <b>時刻</b> 毎日 7:00 → このショートカットを実行 →
+                  「実行前に尋ねる」を <b>オフ</b>
+                </li>
+              </ol>
+            </div>
+
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+              使える項目: sleep_hours / steps / resting_hr / hrv_ms / workout_minutes / energy_self (1〜5)。
+              すべて任意なので、まず歩数だけで動かして、あとから足すのが楽です。
+              日付は送らなければ「今日」になります。
+            </p>
+          </div>
+        )}
+      </section>
 
       {/* 手入力 (任意・保険) */}
       <section className="pt-2">

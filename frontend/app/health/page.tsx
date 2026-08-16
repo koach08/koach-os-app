@@ -156,7 +156,10 @@ export default function HealthPage() {
     (today.sleep_hours != null || today.steps != null || today.energy_self != null);
 
   return (
-    <main className="max-w-3xl mx-auto px-5 py-8 space-y-6">
+    // AppShell が本文を overflow-hidden で包むので、各ページが自前でスクロール領域を持つ。
+    // これが無いと画面下が切れてスクロールできない (iPhone で手順が読めない不具合)。
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-3xl mx-auto px-5 py-8 pb-16 space-y-6">
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <span>❤️</span> 健康・コンディション
@@ -423,7 +426,8 @@ export default function HealthPage() {
             </div>
           </div>
         )}
-      </section>
-    </main>
+        </section>
+      </div>
+    </div>
   );
 }

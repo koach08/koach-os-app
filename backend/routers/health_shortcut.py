@@ -23,6 +23,8 @@ router = APIRouter()
 @router.get("/health-data/quick")
 def post_health_quick(
     sleep_hours: float | None = None,
+    sleep_minutes: float | None = None,
+    sleep_seconds: float | None = None,
     steps: int | None = None,
     resting_hr: int | None = None,
     hrv_ms: float | None = None,
@@ -36,7 +38,16 @@ def post_health_quick(
     URL に値を並べるだけで書き込めるようにして、ショートカットを
     「ヘルスサンプルを検索」→「URL の内容を取得」の 2 アクションに縮める。
     GET で書き込むのは行儀が悪いが、個人用途なので手数を減らす方を取る。
+
+    睡眠は「ヘルスサンプルを検索」が秒で返す。ショートカット側に計算
+    アクションを足させないよう、秒・分のまま受けてこちらで時間に直す。
     """
+    if sleep_hours is None:
+        if sleep_seconds is not None:
+            sleep_hours = round(sleep_seconds / 3600.0, 2)
+        elif sleep_minutes is not None:
+            sleep_hours = round(sleep_minutes / 60.0, 2)
+
     return post_health(
         HealthIn(
             date=date,

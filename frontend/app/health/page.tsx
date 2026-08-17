@@ -2,9 +2,11 @@
 
 /**
  * 健康・コンディション — Apple Watch / Health の数値を眺める画面。
- * データの入口は iOS ショートカット + オートメーション (毎朝自動 POST /api/health-data)。
+ * データの入口は iOS ショートカット + オートメーション (毎朝自動送信)。
+ * ショートカットを短くするため GET /api/health-data/quick に URL で値を並べる形にした。
  * この画面は「見るだけ」が主。手入力は保険 (自動が回れば触らない)。
- * 受け皿・保存・state-hint はバックエンド実装済み (backend/routers/health_intake.py)。
+ * 受け皿・保存・state-hint はバックエンド実装済み
+ * (backend/routers/health_intake.py + health_shortcut.py)。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -23,6 +25,10 @@ type HealthEntry = {
 
 type Recent = { days: number; items: HealthEntry[] };
 type Hint = { hint: string; energy_band: string };
+
+// ドメインは 1 つに寄せる (Vercel の rewrite 経由で Railway に届く)。
+const QUICK_URL = "https://koach-os.vercel.app/api/health-data/quick";
+const AUTO_EXPORT_URL = "https://koach-os.vercel.app/api/health-data/auto-export";
 
 function bandColor(band: string): string {
   return band === "low" ? "#ef4444" : band === "high" ? "#10b981" : "var(--color-text-muted)";
@@ -83,7 +89,13 @@ export default function HealthPage() {
 
   // iPhone 側の設定手順 (初回だけ開く)
   const [showSetup, setShowSetup] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState("");
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard?.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(""), 2000);
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -301,6 +313,7 @@ export default function HealthPage() {
           >
             <p style={{ color: "var(--color-text-muted)" }}>
               一度だけ設定すれば、あとは毎朝勝手に送られます。日々の入力は不要です。
+              ヘッダや JSON 本文の組み立ては要りません。URL に値を並べるだけで届きます。
             </p>
 
             <div className="space-y-2">
@@ -312,25 +325,21 @@ export default function HealthPage() {
                   className="text-xs rounded-lg px-3 py-2 break-all"
                   style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
                 >
-                  https://koach-os.vercel.app/api/health-data
+                  {QUICK_URL}?steps=
                 </code>
                 <button
-                  onClick={() => {
-                    navigator.clipboard?.writeText("https://koach-os.vercel.app/api/health-data");
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  }}
+                  onClick={() => copy(`${QUICK_URL}?steps=`, "quick")}
                   className="text-xs rounded-lg px-3 py-2"
                   style={{ background: "var(--color-accent)", color: "#fff" }}
                 >
-                  {copied ? "コピーしました" : "コピー"}
+                  {copied === "quick" ? "コピーしました" : "コピー"}
                 </button>
               </div>
             </div>
 
             <div className="space-y-2">
               <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
-                手順 (ショートカット App)
+                手順 (ショートカット App) — まず歩数だけの 2 アクション
               </span>
               <ol className="space-y-1.5 list-decimal pl-5" style={{ color: "var(--color-text-muted)" }}>
                 <li>「ショートカット」App → 新規作成</li>
@@ -338,19 +347,8 @@ export default function HealthPage() {
                   <b>ヘルスサンプルを検索</b> → 種類「歩数」、期間「今日」、まとめ方「合計」
                 </li>
                 <li>
-                  <b>ヘルスサンプルを検索</b> → 種類「睡眠」、期間「今日」。秒で返るので{" "}
-                  <b>計算</b> アクションで ÷ 3600 して時間にします
-                </li>
-                <li>
-                  <b>URL の内容を取得</b> → 上の URL / 方法 <b>POST</b> / ヘッダ{" "}
-                  <code className="text-[11px]">Content-Type: application/json</code> / 本文は <b>JSON</b>
-                </li>
-                <li>
-                  JSON の中身は{" "}
-                  <code className="text-[11px]">
-                    {`{"sleep_hours": <睡眠>, "steps": <歩数>}`}
-                  </code>{" "}
-                  (入れたい項目だけで可)
+                  <b>URL の内容を取得</b> → URL 欄に上の URL を貼り、<b>末尾に手順 2 の結果</b>{" "}
+                  (青い変数) をドラッグして置く。方法は <b>GET</b> のまま、ヘッダも本文も触りません
                 </li>
                 <li>
                   「オートメーション」タブ → <b>時刻</b> 毎日 7:00 → このショートカットを実行 →
@@ -359,11 +357,48 @@ export default function HealthPage() {
               </ol>
             </div>
 
+            <div className="space-y-2">
+              <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                睡眠も足すとき (アクションを 1 つ増やすだけ)
+              </span>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                <b>ヘルスサンプルを検索</b> → 種類「睡眠」、期間「今日」を足して、URL を{" "}
+                <code className="text-[11px] break-all">?steps=〈歩数〉&amp;sleep_seconds=〈睡眠〉</code>{" "}
+                にします。睡眠は秒で返りますが、そのまま渡せば時間に直して保存します
+                (分なら <code className="text-[11px]">sleep_minutes</code>)。÷3600 の計算アクションは要りません。
+              </p>
+            </div>
+
             <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-              使える項目: sleep_hours / steps / resting_hr / hrv_ms / workout_minutes / energy_self (1〜5)。
-              すべて任意なので、まず歩数だけで動かして、あとから足すのが楽です。
+              使える項目: steps / sleep_seconds (または sleep_minutes・sleep_hours) / resting_hr / hrv_ms /
+              workout_minutes / energy_self (1〜5)。すべて任意なので、まず歩数だけで動かして、あとから足すのが楽です。
               日付は送らなければ「今日」になります。
             </p>
+
+            <div className="space-y-2 pt-1" style={{ borderTop: "1px solid var(--color-border)" }}>
+              <span className="text-xs font-semibold pt-2 block" style={{ color: "var(--color-text-muted)" }}>
+                ショートカットを作りたくない場合
+              </span>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
+                「Health Auto Export」アプリの送信先 (REST API) に下の URL を入れるだけでも届きます。
+                向こうの形式のまま受けて 1 日 1 行に畳みます。
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <code
+                  className="text-xs rounded-lg px-3 py-2 break-all"
+                  style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+                >
+                  {AUTO_EXPORT_URL}
+                </code>
+                <button
+                  onClick={() => copy(AUTO_EXPORT_URL, "hae")}
+                  className="text-xs rounded-lg px-3 py-2"
+                  style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                >
+                  {copied === "hae" ? "コピーしました" : "コピー"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </section>

@@ -123,6 +123,8 @@ from routers import measure
 app.include_router(measure.router, prefix="/api")
 from routers import guard
 app.include_router(guard.router, prefix="/api")
+from routers import health_shortcut
+app.include_router(health_shortcut.router, prefix="/api")
 
 
 @app.get("/api/health")

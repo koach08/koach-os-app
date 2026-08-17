@@ -51,15 +51,35 @@ def _today() -> str:
     return now_jst().strftime("%Y-%m-%d")
 
 
+_FIELDS = tuple(HealthIn.model_fields.keys())
+
+
 def _current_state() -> dict[str, dict]:
-    """date -> latest entry"""
+    """date -> その日の値 (項目ごとに最後に届いたもの)
+
+    ショートカットも Health Auto Export も「歩数だけ」「睡眠だけ」と
+    部分的に送ってくる。行を丸ごと後勝ちにすると、あとから届いた
+    歩数だけの行がその日の睡眠を消してしまう。項目単位で上書きする。
+    """
     state: dict[str, dict] = {}
     for e in read_jsonl(HEALTH_FILE):
         d = e.get("date", "")
         if not d:
             continue
-        state[d] = e
-    return state
+        cur = state.get(d)
+        if cur is None:
+            cur = {k: None for k in _FIELDS}
+            cur["date"] = d
+            state[d] = cur
+        for k, v in e.items():
+            if v is None or v == "":
+                continue
+            cur[k] = v
+
+    # 数値が 1 つも入っていない日は「データ無し」として扱う
+    # (疎通確認の空 POST などで日が埋まって見えないように)
+    metrics = [k for k in _FIELDS if k not in ("date", "note")]
+    return {d: v for d, v in state.items() if any(v.get(k) is not None for k in metrics)}
 
 
 @router.post("/health-data")

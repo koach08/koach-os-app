@@ -339,19 +339,30 @@ export default function HealthPage() {
 
             <div className="space-y-2">
               <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
-                手順 (ショートカット App) — まず歩数だけの 2 アクション
+                手順 (ショートカット App) — まず歩数だけ、アクション 3 つ
               </span>
               <ol className="space-y-1.5 list-decimal pl-5" style={{ color: "var(--color-text-muted)" }}>
-                <li>「ショートカット」App → 新規作成</li>
                 <li>
-                  <b>ヘルスサンプルを検索</b> → 種類「歩数」、期間「今日」、まとめ方「合計」
+                  「ショートカット」App → 右上の <b>＋</b> で新規作成
                 </li>
                 <li>
-                  <b>URL の内容を取得</b> → URL 欄に上の URL を貼り、<b>末尾に手順 2 の結果</b>{" "}
-                  (青い変数) をドラッグして置く。方法は <b>GET</b> のまま、ヘッダも本文も触りません
+                  検索窓に「ヘルスケア」と入れて <b>ヘルスケアサンプルを検索</b> を追加 →
+                  種類を <b>歩数</b>、フィルタに <b>開始日 が 今日</b> を追加
                 </li>
                 <li>
-                  「オートメーション」タブ → <b>時刻</b> 毎日 7:00 → このショートカットを実行 →
+                  検索窓に「統計」と入れて <b>統計を計算</b> を追加 → 演算は <b>合計</b>。
+                  対象は手順 2 の結果 (ヘルスケアサンプル) になります
+                </li>
+                <li>
+                  検索窓に「URL」と入れて <b>URL の内容を取得</b> を追加 → URL 欄に上の URL を貼り、
+                  <b>末尾に手順 3 の結果</b> (青い変数) をドラッグして置く。
+                  方法は <b>GET</b> のまま、ヘッダも本文も触りません
+                </li>
+                <li>
+                  ▶ で 1 回実行 → この画面を再読み込みして歩数が出れば成功
+                </li>
+                <li>
+                  下の「オートメーション」タブ → <b>時刻</b> 毎日 7:00 → このショートカットを実行 →
                   「実行前に尋ねる」を <b>オフ</b>
                 </li>
               </ol>
@@ -359,13 +370,14 @@ export default function HealthPage() {
 
             <div className="space-y-2">
               <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
-                睡眠も足すとき (アクションを 1 つ増やすだけ)
+                睡眠も足すとき (歩数が動いてからで十分)
               </span>
               <p className="text-xs leading-relaxed" style={{ color: "var(--color-text-muted)" }}>
-                <b>ヘルスサンプルを検索</b> → 種類「睡眠」、期間「今日」を足して、URL を{" "}
+                同じ形をもう一組足します。<b>ヘルスケアサンプルを検索</b> の種類を <b>睡眠分析</b> にして、
+                <b>統計を計算</b> の合計を <b>再生時間</b> に対して取る。出てくるのは秒なので、URL を{" "}
                 <code className="text-[11px] break-all">?steps=〈歩数〉&amp;sleep_seconds=〈睡眠〉</code>{" "}
-                にします。睡眠は秒で返りますが、そのまま渡せば時間に直して保存します
-                (分なら <code className="text-[11px]">sleep_minutes</code>)。÷3600 の計算アクションは要りません。
+                にすればこちらで時間に直します (分なら <code className="text-[11px]">sleep_minutes</code>)。
+                ÷3600 の計算アクションは要りません。
               </p>
             </div>
 

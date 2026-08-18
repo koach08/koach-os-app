@@ -23,6 +23,8 @@ from data_manager import (
     timestamp_jst,
 )
 
+from routers.work_log import demote_completion, promote_completion
+
 router = APIRouter()
 
 COMPLETIONS_FILE = DATA_DIR / "completions.jsonl"
@@ -42,6 +44,11 @@ class CompletionIn(BaseModel):
 
 def _today_jst() -> str:
     return now_jst().strftime("%Y-%m-%d")
+
+
+def _work_ref(kind: str, ref_id: str) -> str:
+    """実績台帳側の参照キー。calendar と backlog で id が衝突しないよう種別を前置する。"""
+    return f"{kind}:{ref_id}" if ref_id else ""
 
 
 def _current_state() -> dict[tuple[str, str, str], dict]:
@@ -100,7 +107,17 @@ def add_completion(payload: CompletionIn):
         "completed_at": timestamp_jst(),
     }
     append_jsonl(COMPLETIONS_FILE, entry)
-    return entry
+
+    # チェックした事実を実績台帳へ残す。ここを繋いでいなかったので、
+    # 予定を消化してもあとから「やったかどうか」を確かめられなかった。
+    promoted = promote_completion(
+        title=payload.title,
+        date=target_date,
+        category=payload.category,
+        outcome=payload.note,
+        ref_id=_work_ref(payload.kind, payload.ref_id),
+    )
+    return {**entry, "work_logged": bool(promoted.get("created"))}
 
 
 @router.delete("/completions")
@@ -122,4 +139,5 @@ def remove_completion(
         "deleted_at": timestamp_jst(),
     }
     append_jsonl(COMPLETIONS_FILE, tombstone)
+    demote_completion(_work_ref(kind, ref_id), target_date)
     return {"ok": True, "removed": True}

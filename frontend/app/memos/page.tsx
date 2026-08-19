@@ -35,6 +35,7 @@ export default function MemosPage() {
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [selectedColor, setSelectedColor] = useState<Color>("yellow");
+  const [search, setSearch] = useState("");
 
   const load = () => {
     setLoading(true);
@@ -58,8 +59,13 @@ export default function MemosPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: input, color: selectedColor }),
       });
+      const written = input;
       setInput("");
       load();
+      // 書いた内容に完了シグナルがあれば自動で認識（ユーザーの「メモに書いたら認識」要望）
+      if (/完了|提出|終わった|done|submitted|済/i.test(written)) {
+        fetch("/api/memos/infer-completions", { method: "POST" }).then(() => load()).catch(() => {});
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -174,10 +180,36 @@ export default function MemosPage() {
               >
                 追加
               </button>
-            </div>
-          </div>
+           </div>
+           </div>
 
-          {error && (
+           <div className="flex gap-2 items-center">
+             <input
+               value={search}
+               onChange={(e) => setSearch(e.target.value)}
+               placeholder="メモ検索..."
+               className="flex-1 px-3 py-1.5 rounded-lg text-sm"
+               style={{ background: "var(--color-background)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+             />
+             <button
+               onClick={async () => {
+                 try {
+                   const res = await fetch("/api/memos/infer-completions?use_llm=true", { method: "POST" });
+                   const data = await res.json();
+                   alert(data.applied?.length ? `メモから ${data.applied.length} 件認識・完了化 (LLM)` : "該当なし");
+                   load();
+                 } catch (e) {
+                   setError(String(e));
+                 }
+               }}
+               className="px-3 py-1.5 text-xs rounded-full"
+               style={{ background: "rgba(234,179,8,0.15)", color: "#eab308", border: "1px solid #eab308" }}
+             >
+               メモから完了認識 (LLM)
+             </button>
+           </div>
+
+           {error && (
             <div
               className="rounded-2xl p-3 text-sm"
               style={{
@@ -205,9 +237,11 @@ export default function MemosPage() {
                 まだメモはありません
               </p>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {memos.map((m) => {
+           ) : (
+             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+               {memos
+                 .filter((m) => !search || m.content.toLowerCase().includes(search.toLowerCase()))
+                 .map((m) => {
                 const cs = COLOR_STYLES[m.color];
                 return (
                   <div

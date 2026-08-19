@@ -65,6 +65,8 @@ type DailyBrief = {
   failures: Failure[];
   backlog?: BacklogItem[];
   completions_today?: Completion[];
+  memo_inferred_completions?: any[];
+  missed_items?: any[];
   uni_pending?: UniPending[];
   autopilot_reports?: AutopilotReport[];
   proposals_pending?: ProposalPending[];
@@ -371,9 +373,9 @@ export default function DailyPage() {
           </h1>
           <div className="mt-6 flex items-center gap-3 flex-wrap">
             <button
-              onClick={refresh}
+              onClick={() => load(engine, true)}
               disabled={loading}
-              className="px-5 py-2.5 rounded-full text-sm font-medium transition-all disabled:opacity-50 hover:scale-[1.02]"
+              className="px-5 py-2.5 rounded-full text-sm font-medium transition-all hover:scale-[1.02]"
               style={{
                 background: "var(--color-accent)",
                 color: "white",
@@ -381,6 +383,19 @@ export default function DailyPage() {
               }}
             >
               {loading ? "生成中..." : "🔄 Brief を再生成"}
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch("/api/memos/infer-completions?use_llm=true", { method: "POST" });
+                  load(engine, true);
+                } catch {}
+              }}
+              className="px-3 py-2 rounded-full text-xs border"
+              style={{ borderColor: "#22c55e", color: "#22c55e" }}
+              title="LLMでメモを深く解析して完了認識（1,2,4）"
+            >
+              🧠 LLMでメモ照合
             </button>
             {data && (
               <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
@@ -462,11 +477,21 @@ export default function DailyPage() {
                 </button>
               );
             })}
-          </div>
-        </div>
-      </div>
+           </div>
 
-      <div className="px-8 pb-16">
+           {/* 1+2+3+4 強化: メモ実績照合 + Coach連携ヒント */}
+           {data && (data.memo_inferred_completions?.length > 0 || data.missed_items?.length > 0) && (
+             <div className="mt-3 text-xs p-3 rounded-2xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+               <div className="font-medium mb-1">📋 メモ×予定 自動照合</div>
+               {data.memo_inferred_completions?.length > 0 && <div className="text-emerald-400">認識: {data.memo_inferred_completions.map((m:any) => m.title || m.kind).slice(0,3).join(" / ")}</div>}
+               {data.missed_items?.length > 0 && <div className="text-amber-400">未拾い: {data.missed_items.map((m:any) => m.title).slice(0,3).join(" / ")}</div>}
+               <div className="text-[10px] mt-1 opacity-60">メモに書いただけで実績化 + 抜け漏れ検知</div>
+             </div>
+           )}
+         </div>
+       </div>
+
+       <div className="px-8 pb-16">
         <div className="max-w-5xl mx-auto space-y-6">
           {error && (
             <div

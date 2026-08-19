@@ -52,6 +52,7 @@ export default function TasksPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Status | "all">("all");
   const [showNewForm, setShowNewForm] = useState(false);
+  const [search, setSearch] = useState("");
 
   // New task form state
   const [newTitle, setNewTitle] = useState("");
@@ -314,8 +315,8 @@ export default function TasksPage() {
             </div>
           )}
 
-          {/* Filter pills */}
-          <div className="flex gap-2 flex-wrap">
+          {/* Filter pills + memo inference */}
+          <div className="flex gap-2 flex-wrap items-center">
             {(["all", "todo", "in_progress", "done"] as const).map((f) => (
               <button
                 key={f}
@@ -331,6 +332,34 @@ export default function TasksPage() {
                 {f === "all" ? "すべて" : STATUS_META[f as Status].label} ({counts[f]})
               </button>
             ))}
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch("/api/memos/infer-completions", { method: "POST" });
+                  const data = await res.json();
+                  if (data.applied?.length) {
+                    alert(`メモから ${data.applied.length} 件を完了として認識しました`);
+                  } else {
+                    alert("該当する完了記述は見つかりませんでした");
+                  }
+                  load();
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                }
+              }}
+              className="ml-2 px-3 py-1.5 rounded-full text-xs"
+              style={{ background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid #22c55e" }}
+              title="メモに「完了」「提出した」など書いたものをタスク/カレンダー完了に自動反映"
+            >
+              🪧 メモから完了認識
+            </button>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="タスク検索"
+              className="ml-3 px-2 py-1 text-xs rounded border"
+              style={{ background: "var(--color-background)", borderColor: "var(--color-border)", color: "var(--color-text)" }}
+            />
           </div>
 
           {error && (
@@ -361,9 +390,11 @@ export default function TasksPage() {
                 {filter === "all" ? "まだタスクがありません" : "該当するタスクがありません"}
               </p>
             </div>
-          ) : (
-            <div className="space-y-2">
-              {filtered.map((t) => {
+           ) : (
+             <div className="space-y-2">
+               {filtered
+                 .filter((t) => !search || t.title.toLowerCase().includes(search.toLowerCase()) || (t.description || "").toLowerCase().includes(search.toLowerCase()))
+                 .map((t) => {
                 const sm = STATUS_META[t.status];
                 const pm = PRIORITY_META[t.priority];
                 const isDone = t.status === "done";

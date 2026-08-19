@@ -49,6 +49,19 @@ def evening_brief(engine: str = Query("claude")):
     done_ids = {c.get("ref_id") for c in completions_today if c.get("kind") == "calendar"}
     missed_calendar = [ev for ev in cal_today if ev["id"] and ev["id"] not in done_ids]
 
+    # 1+2+4: メモ推定完了も加味した照合
+    memo_inferred_eve = []
+    try:
+        from routers.memos import _infer_completions
+        res = _infer_completions(use_llm=False)
+        memo_inferred_eve = res.get("applied", [])
+    except Exception:
+        pass
+    for mi in memo_inferred_eve:
+        if mi.get("kind") == "calendar" and mi.get("id"):
+            done_ids.add(mi.get("id"))
+    missed_calendar = [ev for ev in missed_calendar if ev["id"] not in done_ids]
+
     # Coach バックログ
     try:
         from routers.productivity import _load_backlog
@@ -72,6 +85,11 @@ def evening_brief(engine: str = Query("claude")):
         "\n".join(f"- {c.get('title','')}" for c in completions_today)
         if completions_today
         else "(今日は完了ログなし)"
+    )
+    memo_text = (
+        "\n".join(f"- {a.get('title','')}" for a in memo_inferred_eve[:5])
+        if memo_inferred_eve
+        else "(メモからの認識なし)"
     )
     missed_text = (
         "\n".join(f"- {ev['title']}" for ev in missed_calendar[:8])
@@ -123,6 +141,9 @@ def evening_brief(engine: str = Query("claude")):
 ## 今日完了したこと ({len(completions_today)}件)
 {completion_text}
 
+## メモから認識された実績（キーワード/LLM）
+{memo_text}
+
 ## 予定で取りこぼしたもの
 {missed_text}
 
@@ -157,6 +178,7 @@ def evening_brief(engine: str = Query("claude")):
     return {
         "generated_at": now.isoformat(),
         "completions": completions_today,
+        "memo_inferred": memo_inferred_eve,
         "missed_calendar": missed_calendar,
         "backlog_left": [
             {"id": b.get("id"), "title": b.get("title"), "urgency": b.get("urgency", "medium")}

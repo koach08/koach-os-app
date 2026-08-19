@@ -98,7 +98,7 @@ def _open_tasks() -> list[dict]:
     priority_rank = {"high": 0, "medium": 1, "low": 2}
     open_tasks.sort(
         key=lambda t: (
-            (t.get("due_date") or "9999-12-31") < today,  # overdue first... wait false sorts first
+            not ((t.get("due_date") or "9999-12-31") < today),  # overdue=True first
             t.get("due_date") or "9999-12-31",
             priority_rank.get(t.get("priority", "medium"), 1),
         )
@@ -281,9 +281,9 @@ def daily_brief(
     # 5. オープンタスク
     tasks = _open_tasks()
 
-    # 6. Coach バックログ（未完 + defer_until 過ぎたものだけ）
+    # 6. Coach バックログ + 今日向け簡易提案（3. Daily-Coach連携強化）
     try:
-        from routers.productivity import _load_backlog
+        from routers.productivity import _load_backlog, _load_life_blocks
         today_iso = now.strftime("%Y-%m-%d")
         backlog_items = [
             {
@@ -300,8 +300,12 @@ def daily_brief(
             if not b.get("done")
             and (not b.get("defer_until") or b["defer_until"] <= today_iso)
         ]
+        life_blocks = _load_life_blocks() if hasattr(globals().get('productivity', None), '_load_life_blocks') else []
+        # 簡易: 今日の life load ヒント
+        life_load_summary = "生活ブロック: " + ", ".join(b.get("title","") for b in (life_blocks or [])[:4]) if life_blocks else ""
     except Exception:
         backlog_items = []
+        life_load_summary = ""
 
     # 7. 今日の完了ログ
     try:
@@ -313,6 +317,33 @@ def daily_brief(
         completions_today.sort(key=lambda x: x.get("completed_at", ""))
     except Exception:
         completions_today = []
+
+    # 1+2+4: メモからの自動完了認識 + 実績永続化 + 照合用データ
+    memo_inferred = []
+    try:
+        from routers.memos import _infer_completions
+        # 軽量（keyword）でまず走らせる。必要ならフロントから use_llm で再実行
+        infer_result = _infer_completions(use_llm=False)
+        memo_inferred = infer_result.get("applied", [])
+    except Exception:
+        memo_inferred = []
+
+    # 予定 vs 実績 照合: 今日の予定のうち、完了もメモ言及もないものを missed として出す
+    missed_items = []
+    try:
+        done_titles = {c.get("title", "").lower() for c in completions_today}
+        done_titles |= {str(a.get("title", "")).lower() for a in memo_inferred if a.get("title")}
+        for ev in schedule:
+            t = str(ev.get("title", "")).lower()
+            if t and not any(t in dt or dt in t for dt in done_titles):
+                missed_items.append({"title": ev.get("title"), "start": ev.get("start"), "source": "calendar"})
+        for t in tasks[:8]:
+            if t.get("status") != "done":
+                tl = str(t.get("title", "")).lower()
+                if tl and not any(tl in dt or dt in tl for dt in done_titles):
+                    missed_items.append({"title": t.get("title"), "due": t.get("due_date"), "source": "task"})
+    except Exception:
+        missed_items = []
 
     # 8. 大学メールの未反映 (uni-inbox) — カレンダー未登録の締切・予定。朝ブリーフに含めて見落とし防止
     try:
@@ -461,6 +492,16 @@ def daily_brief(
         if completions_today
         else "(今日まだ完了なし)"
     )
+    memo_text = (
+        "\n".join(f"- {a.get('title','') or a.get('kind')}" for a in memo_inferred[:6])
+        if memo_inferred
+        else "(メモからの新規認識なし)"
+    )
+    missed_text = (
+        "\n".join(f"- {m.get('title','')}" for m in missed_items[:5])
+        if missed_items
+        else "(未達疑いなし)"
+    )
 
     prompt = f"""あなたは Koach OS。志柿のための reflective AI partner。
 今は {now.strftime('%Y-%m-%d %H:%M (%A)')} 。
@@ -501,6 +542,12 @@ def daily_brief(
 
 ## 今日すでに完了したこと
 {completion_text}
+
+## メモから自動認識された実績（提出・完了を書いただけのものも含む）
+{memo_text}
+
+## 予定していたがまだ実績として拾えていないもの（注意）
+{missed_text}
 
 ## 今日の状態（エネルギー）
 {energy_text}
@@ -568,6 +615,8 @@ def daily_brief(
         "tasks": tasks,
         "backlog": backlog_items,
         "completions_today": completions_today,
+        "memo_inferred_completions": memo_inferred,
+        "missed_items": missed_items[:8],
         "uni_pending": uni_pending,
         "autopilot_reports": autopilot_reports,
         "proposals_pending": proposals_pending,

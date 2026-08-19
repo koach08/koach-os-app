@@ -494,11 +494,14 @@ def list_events_range_multi(start_date: str, end_date: str, calendar_ids: list[s
             continue
         for ev in events_result.get("items", []):
             evid = ev.get("id", "")
-            key = f"{slot}:{cid}:{evid}"
+            start_raw = ev.get("start", {})
+            # 同じ予定が複数のカレンダー (別 slot / 共有カレンダー) に見えていると、
+            # 今日の予定に同じものが2度3度並ぶ。予定 id + その回の開始で1件にする。
+            key = f"{evid}:{start_raw.get('dateTime') or start_raw.get('date') or ''}"
             if key in seen:
                 continue
             seen.add(key)
-            start = ev.get("start", {})
+            start = start_raw
             end_ = ev.get("end", {})
             out.append({
                 "id": evid,

@@ -221,37 +221,88 @@ def create_work_log(req: WorkLogCreate):
     return entry
 
 
-@router.post("/work-log/from-completion")
-def promote_from_completion(req: PromoteFromCompletion):
-    """Daily Brief / Evening で done にした項目を実績台帳へ昇格。
-    同じ ref_id + date が既に昇格済みなら二重登録しない (冪等)。"""
-    if not req.title.strip():
-        raise HTTPException(status_code=400, detail="title required")
-    target_date = _validate_date(req.date)
+def promote_completion(
+    *,
+    title: str,
+    date: str = "",
+    project: str = "",
+    category: str = "",
+    engine: str = "",
+    outcome: str = "",
+    ref_id: str = "",
+) -> dict:
+    """完了チェックを実績台帳へ昇格する。completions.py からも呼ぶ。
 
-    if req.ref_id:
+    チェックした事実がどこにも残らないと「やったかどうか」を後から
+    確かめられない。チェックと同時にここへ積む。
+    同じ ref_id + date が既にあれば二重登録しない (冪等)。
+    """
+    title = (title or "").strip()
+    if not title:
+        return {"created": False, "reason": "title required"}
+    target_date = _validate_date(date)
+
+    if ref_id:
         for w in _materialize().values():
-            if w.get("ref_id") == req.ref_id and w.get("date") == target_date:
+            if w.get("ref_id") == ref_id and w.get("date") == target_date:
                 return {"created": False, "existing": w}
 
     now = timestamp_jst()
     entry = {
         "id": generate_id("work"),
-        "title": req.title.strip(),
-        "project": req.project.strip(),
-        "category": req.category.strip(),
+        "title": title,
+        "project": (project or "").strip(),
+        "category": (category or "").strip(),
         "date": target_date,
         "minutes": 0,
-        "engine": req.engine.strip(),
-        "outcome": req.outcome.strip(),
+        "engine": (engine or "").strip(),
+        "outcome": (outcome or "").strip(),
         "tags": [],
         "source": "completion",
-        "ref_id": req.ref_id,
+        "ref_id": ref_id,
         "created_at": now,
         "updated_at": now,
     }
     append_jsonl(WORK_LOG_FILE, entry)
     return {"created": True, "entry": entry}
+
+
+def demote_completion(ref_id: str, date: str) -> dict:
+    """チェックを外したら、それで積んだ実績も取り下げる。
+
+    手で書いた実績 (source=manual) には触らない。
+    """
+    if not ref_id:
+        return {"deleted": False}
+    for w in _materialize().values():
+        if (
+            w.get("ref_id") == ref_id
+            and w.get("date") == date
+            and w.get("source") == "completion"
+        ):
+            append_jsonl(
+                WORK_LOG_FILE,
+                {"id": w["id"], "_deleted": True, "deleted_at": timestamp_jst()},
+            )
+            return {"deleted": True, "id": w["id"]}
+    return {"deleted": False}
+
+
+@router.post("/work-log/from-completion")
+def promote_from_completion(req: PromoteFromCompletion):
+    """Daily Brief / Evening で done にした項目を実績台帳へ昇格 (冪等)。"""
+    result = promote_completion(
+        title=req.title,
+        date=req.date,
+        project=req.project,
+        category=req.category,
+        engine=req.engine,
+        outcome=req.outcome,
+        ref_id=req.ref_id,
+    )
+    if result.get("reason") == "title required":
+        raise HTTPException(status_code=400, detail="title required")
+    return result
 
 
 @router.patch("/work-log/{work_id}")

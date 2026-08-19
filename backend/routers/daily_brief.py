@@ -38,6 +38,56 @@ def _format_event(ev: dict) -> dict:
     }
 
 
+def _fetch_schedules(now) -> tuple[list[dict], list[dict], list[dict]]:
+    """今日 / 明日 / 今週の予定を、カレンダー取得 1 回で揃える。
+
+    今日・明日・今週をそれぞれ別に引くと、見えているカレンダー 9 個への
+    問い合わせを 3 回繰り返すことになり、それだけで /daily が 20 秒近く待つ。
+    8 日ぶんまとめて 1 回引き、こちらで切り分ける。
+    """
+    from gcal import list_events_range_multi, detect_event_type
+
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    rows = list_events_range_multi(today, (now + timedelta(days=8)).strftime("%Y-%m-%d"))
+
+    def covers(r: dict, day: str) -> bool:
+        s = r.get("start_iso") or ""
+        e = r.get("end_iso") or s
+        return bool(s) and s[:10] <= day <= (e[:10] or s[:10])
+
+    def shape(r: dict) -> dict:
+        return {
+            "id": r.get("id", ""),
+            "title": r.get("title", "(no title)"),
+            "start": r.get("start_iso", ""),
+            "end": r.get("end_iso", "") or r.get("start_iso", ""),
+            "all_day": r.get("all_day", False),
+            "location": r.get("location", ""),
+        }
+
+    schedule = sorted((shape(r) for r in rows if covers(r, today)), key=lambda x: x["start"])
+    tomorrow_list = sorted((shape(r) for r in rows if covers(r, tomorrow)), key=lambda x: x["start"])
+
+    # 今週は「まだ終わっていないもの」だけ。従来は UTC の現在時刻を +09:00 の
+    # 予定と突き合わせていたので、9 時間前に終わった予定まで残っていた。
+    now_iso = now.isoformat()[:19]
+    week = [
+        {
+            "title": r.get("title", "(no title)"),
+            "start": r.get("start_iso", ""),
+            "end": r.get("end_iso", "") or r.get("start_iso", ""),
+            "location": r.get("location", ""),
+            "all_day": r.get("all_day", False),
+            "event_type": r.get("event_type") or detect_event_type(r.get("title", ""), r.get("description", "")),
+        }
+        for r in rows
+        if (r.get("end_iso") or r.get("start_iso") or "") >= now_iso
+    ]
+    week.sort(key=lambda x: x["start"])
+    return schedule, tomorrow_list, week
+
+
 def _recent_decisions(days: int = 3, limit: int = 5) -> list[dict]:
     """直近N日の decisions.jsonl を新しい順で返す。"""
     decisions = read_jsonl(DECISIONS_FILE)
@@ -241,26 +291,12 @@ def daily_brief(
 
     # 1. Gcal 予定（今日 / 明日 / 今週）
     if is_configured():
-        events_raw = get_events(days_ahead=0)
-        schedule = [_format_event(ev) for ev in events_raw]
-        tomorrow_raw = get_events(days_ahead=1)
-        schedule_tomorrow = [_format_event(ev) for ev in tomorrow_raw]
-        # 今週分（今日含む7日）
         try:
-            from gcal import list_upcoming_events
-            week_raw = list_upcoming_events(days_ahead=7)
-            schedule_week = [
-                {
-                    "title": ev["title"],
-                    "start": ev["start_iso"],
-                    "end": ev["end_iso"],
-                    "location": ev["location"],
-                    "all_day": ev["all_day"],
-                    "event_type": ev["event_type"],
-                }
-                for ev in week_raw
-            ]
+            schedule, schedule_tomorrow, schedule_week = _fetch_schedules(now)
         except Exception:
+            # 取得に失敗したら従来の経路へ落とす (予定なしで朝を迎えさせない)
+            schedule = [_format_event(ev) for ev in get_events(days_ahead=0)]
+            schedule_tomorrow = [_format_event(ev) for ev in get_events(days_ahead=1)]
             schedule_week = []
         gcal_status = "ok"
     else:

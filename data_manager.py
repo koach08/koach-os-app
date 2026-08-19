@@ -7,6 +7,7 @@ All timestamps in JST (+09:00).
 
 import json
 import os
+import secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable
@@ -55,8 +56,14 @@ def timestamp_jst() -> str:
 
 
 def generate_id(prefix: str) -> str:
-    """Generate a timestamped ID like 'log_20260226_143022'."""
-    return f"{prefix}_{now_jst().strftime('%Y%m%d_%H%M%S')}"
+    """時刻順に並び、かつ衝突しない ID を返す (例: log_20260226_143022_a3f19c)。
+
+    以前は秒までのタイムスタンプだけだった。まとめて書き込むと同じ秒に入った分が
+    全部同じ id になり、id で materialize している側 (work_log / memos / tasks …) が
+    最後の 1 件を残して静かに捨てていた。実測で 1 秒に 50 件生成 → ユニーク 1 件。
+    先頭は今まで通り時刻順に並ぶので、末尾に乱数を足すだけにする。
+    """
+    return f"{prefix}_{now_jst().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
 
 
 # ─── JSONL Operations ───

@@ -245,6 +245,13 @@ def promote_completion(
     if ref_id:
         for w in _materialize().values():
             if w.get("ref_id") == ref_id and w.get("date") == target_date:
+                # あとから実施時刻や理由を書き足したときは、台帳側にも反映する。
+                # (二重登録はしないが、黙って捨てると書いた内容がどこにも残らない)
+                new_outcome = (outcome or "").strip()
+                if new_outcome and new_outcome != (w.get("outcome") or "").strip():
+                    updated = {**w, "outcome": new_outcome, "updated_at": timestamp_jst()}
+                    append_jsonl(WORK_LOG_FILE, updated)
+                    return {"created": False, "updated": True, "existing": updated}
                 return {"created": False, "existing": w}
 
     now = timestamp_jst()

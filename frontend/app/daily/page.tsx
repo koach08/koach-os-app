@@ -360,8 +360,10 @@ export default function DailyPage() {
   const completionKey = (kind: "calendar" | "backlog", refId: string) =>
     `${kind}:${refId}`;
 
-  // 繰り返し予定の系列キー。Google の id は "系列_その日の回" なので前半だけ見る。
-  const seriesKey = (refId: string) => (refId || "").split("_")[0];
+  // 繰り返し予定の系列キー。Google の id は "系列_20260817T223000Z" の形。
+  // 末尾がその日の回を表す時刻のときだけ落とす (サーバ側と同じ規則)。
+  const seriesKey = (refId: string) =>
+    (refId || "").replace(/_\d{8}T\d{6}Z$/, "");
 
   const applyCompletions = (items: Completion[]) => {
     const map = new Map<string, Completion>();

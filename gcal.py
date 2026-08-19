@@ -324,13 +324,28 @@ def _all_visible_calendar_ids() -> list[str]:
     return [cid for (_s, cid) in _all_visible_calendar_sources()]
 
 
+# 見えているカレンダーの一覧は 1 回の取得に約 10 秒かかる (slot ごとの
+# 認証 + calendarList API)。1 画面の中で予定を何度も引くたびに列挙し直すと
+# そのぶん丸ごと待たされるので、短時間だけ覚えておく。
+_SOURCES_CACHE: dict[str, object] = {"at": 0.0, "value": None}
+_SOURCES_TTL_SEC = 600
+
+
 def _all_visible_calendar_sources() -> list[tuple[int, str]]:
     """全 slot を横断して (slot, calendar_id) を返す。
 
     各 slot の primary + その slot で見えている隠してないカレンダーを返す。
     EXTRA_CALENDAR_IDS が指定されていれば slot 1 にのみ追加。
+    同じカレンダーが複数の slot から見えている場合は 1 回だけ引く
+    (primary は slot ごとに指す先が違うので別扱い)。
     """
     import os
+    import time as _time
+
+    cached = _SOURCES_CACHE.get("value")
+    if cached is not None and (_time.time() - float(_SOURCES_CACHE["at"])) < _SOURCES_TTL_SEC:
+        return list(cached)  # type: ignore[arg-type]
+
     out: list[tuple[int, str]] = []
     seen: set[str] = set()
     explicit = [c.strip() for c in os.environ.get("EXTRA_CALENDAR_IDS", "").split(",") if c.strip()]
@@ -373,7 +388,24 @@ def _all_visible_calendar_sources() -> list[tuple[int, str]]:
         if key not in seen:
             seen.add(key)
             out.append((1, cid))
-    return out
+
+    # 同じカレンダー ID が別 slot からも見えていることがある。中身は同じなので
+    # 先に見つけた slot でだけ引く。primary は slot ごとに別のカレンダーを指す。
+    deduped: list[tuple[int, str]] = []
+    seen_cid: set[str] = set()
+    for slot, cid in out:
+        if cid == "primary":
+            deduped.append((slot, cid))
+            continue
+        if cid in seen_cid:
+            continue
+        seen_cid.add(cid)
+        deduped.append((slot, cid))
+
+    import time as _t
+    _SOURCES_CACHE["value"] = deduped
+    _SOURCES_CACHE["at"] = _t.time()
+    return list(deduped)
 
 
 def list_events_range(start_date: str, end_date: str) -> list[dict]:

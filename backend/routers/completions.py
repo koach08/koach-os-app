@@ -12,6 +12,7 @@ same day is idempotent and unchecking is one DELETE call.
 
 from __future__ import annotations
 
+import re
 from datetime import date as date_cls
 from typing import Literal
 
@@ -73,10 +74,20 @@ def _outcome_text(note: str, actual_time: str, status: str) -> str:
     return " / ".join(parts)
 
 
+_INSTANCE_SUFFIX = re.compile(r"\d{8}T\d{6}Z")
+
+
 def _series_key(ref_id: str) -> str:
     """繰り返し予定の系列キー。Google の id は 'xxxx_20260817T223000Z' の形で、
-    前半が系列、後半がその日の回。系列で登録できないと毎回登録し直しになる。"""
-    return (ref_id or "").split("_", 1)[0]
+    前半が系列、後半がその日の回。系列で登録できないと毎回登録し直しになる。
+
+    末尾がその日の回を表す時刻の形をしているときだけ落とす。単発予定の id に
+    たまたま "_" が入っていても、頭で切ってしまわないようにする。
+    """
+    base, sep, suffix = (ref_id or "").rpartition("_")
+    if sep and _INSTANCE_SUFFIX.fullmatch(suffix):
+        return base
+    return ref_id or ""
 
 
 def _deleted_keys() -> set[tuple[str, str, str]]:

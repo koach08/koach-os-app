@@ -39,7 +39,13 @@ type Completion = {
   date: string;
   category?: string;
   completed_at: string;
+  note?: string;
+  status?: "done" | "skipped" | "changed";
+  actual_time?: string;
+  source?: string;
 };
+
+type RoutineReg = { series_key: string; title: string; auto_done: boolean };
 
 type UniPending = {
   id: string;
@@ -158,6 +164,136 @@ type KpiMetric = { id: string; label: string; value: number; unit?: string; delt
 type FamilyEvent = { id: string; title: string; start_iso: string };
 type HealthHint = { hint: string; energy_band: string };
 
+/**
+ * 予定 1 件の「予定通りではなかった」を書き留めるパネル。
+ *
+ * 保育園の送迎のような定例は基本やる前提なので、普段は開かない。
+ * 長男が熱を出して行けなかった日、いつもより遅くなった日だけここを開く。
+ */
+function EventDetailPanel({
+  ev,
+  current,
+  isRoutine,
+  busy,
+  onRecord,
+  onReschedule,
+  onToggleRoutine,
+  onClose,
+}: {
+  ev: Event;
+  current?: Completion;
+  isRoutine: boolean;
+  busy: boolean;
+  onRecord: (status: "done" | "skipped" | "changed", note: string, actualTime: string) => void;
+  onReschedule: (hhmm: string) => void;
+  onToggleRoutine: () => void;
+  onClose: () => void;
+}) {
+  const [status, setStatus] = useState<"done" | "skipped" | "changed">(current?.status ?? "done");
+  const [note, setNote] = useState(current?.note ?? "");
+  const [actualTime, setActualTime] = useState(current?.actual_time ?? "");
+  const [newTime, setNewTime] = useState("");
+
+  const STATUSES: { key: "done" | "skipped" | "changed"; label: string }[] = [
+    { key: "done", label: "予定通りやった" },
+    { key: "changed", label: "やったが違った" },
+    { key: "skipped", label: "やらなかった" },
+  ];
+
+  return (
+    <div
+      className="mt-2 p-3 rounded-xl text-xs space-y-3"
+      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+    >
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onToggleRoutine}
+          className="px-2 py-1 rounded-md"
+          style={{
+            background: isRoutine ? "var(--color-accent)" : "var(--color-surface-hover)",
+            color: isRoutine ? "white" : "var(--color-text-muted)",
+          }}
+          title="毎回やる予定として登録すると、開始時刻を過ぎた分は自動で済みになる"
+        >
+          {isRoutine ? "★ 定例に登録ずみ" : "☆ 定例にする"}
+        </button>
+        <button onClick={onClose} style={{ color: "var(--color-text-muted)" }}>
+          閉じる
+        </button>
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap">
+        {STATUSES.map((st) => (
+          <button
+            key={st.key}
+            onClick={() => setStatus(st.key)}
+            className="px-2 py-1 rounded-md"
+            style={{
+              background: status === st.key ? "var(--color-accent)" : "var(--color-surface-hover)",
+              color: status === st.key ? "white" : "var(--color-text-muted)",
+            }}
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <label style={{ color: "var(--color-text-muted)" }}>実際にやった時刻</label>
+        <input
+          type="time"
+          value={actualTime}
+          onChange={(e) => setActualTime(e.target.value)}
+          className="px-2 py-1 rounded-md"
+          style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+        />
+      </div>
+
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="違った理由 (例: 長男が発熱で休み / 迎えが 30 分遅れた)"
+        rows={2}
+        className="w-full px-2 py-1.5 rounded-md"
+        style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+      />
+
+      <button
+        onClick={() => onRecord(status, note, actualTime)}
+        disabled={busy}
+        className="px-3 py-1.5 rounded-md disabled:opacity-50"
+        style={{ background: "var(--color-accent)", color: "white" }}
+      >
+        {busy ? "記録中..." : "記録する"}
+      </button>
+
+      {!ev.all_day && (
+        <div
+          className="flex items-center gap-2 flex-wrap pt-2"
+          style={{ borderTop: "1px solid var(--color-border)" }}
+        >
+          <label style={{ color: "var(--color-text-muted)" }}>予定の時刻を変える</label>
+          <input
+            type="time"
+            value={newTime}
+            onChange={(e) => setNewTime(e.target.value)}
+            className="px-2 py-1 rounded-md"
+            style={{ background: "var(--color-surface-hover)", border: "1px solid var(--color-border)" }}
+          />
+          <button
+            onClick={() => onReschedule(newTime)}
+            disabled={!newTime}
+            className="px-2 py-1 rounded-md disabled:opacity-40"
+            style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+          >
+            カレンダーを更新
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DailyPage() {
   const [data, setData] = useState<DailyBrief | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +311,9 @@ export default function DailyPage() {
   const [reminderGaps, setReminderGaps] = useState<ReminderGap[]>([]);
   const [gapDone, setGapDone] = useState<Set<string>>(new Set());
   const [gapBusy, setGapBusy] = useState<string | null>(null);
+  const [completionMap, setCompletionMap] = useState<Map<string, Completion>>(new Map());
+  const [routineKeys, setRoutineKeys] = useState<Set<string>>(new Set());
+  const [openDetail, setOpenDetail] = useState<string | null>(null);
 
   const fixReminder = async (g: ReminderGap) => {
     if (gapBusy) return;
@@ -221,10 +360,148 @@ export default function DailyPage() {
   const completionKey = (kind: "calendar" | "backlog", refId: string) =>
     `${kind}:${refId}`;
 
-  const syncCompletionsFromData = (d: DailyBrief) => {
+  // 繰り返し予定の系列キー。Google の id は "系列_その日の回" なので前半だけ見る。
+  const seriesKey = (refId: string) => (refId || "").split("_")[0];
+
+  const applyCompletions = (items: Completion[]) => {
+    const map = new Map<string, Completion>();
     const keys = new Set<string>();
-    (d.completions_today ?? []).forEach((c) => keys.add(completionKey(c.kind, c.ref_id)));
+    items.forEach((c) => {
+      const k = completionKey(c.kind, c.ref_id);
+      map.set(k, c);
+      // やらなかった日はチェック済みにしない (記録は残すが実績ではない)
+      if (c.status !== "skipped") keys.add(k);
+    });
+    setCompletionMap(map);
     setCompletedKeys(keys);
+  };
+
+  const reloadCompletions = async () => {
+    try {
+      const r = await fetch("/api/completions");
+      if (!r.ok) return;
+      const d = await r.json();
+      applyCompletions(d.items ?? []);
+    } catch {}
+  };
+
+  const syncCompletionsFromData = (d: DailyBrief) => {
+    applyCompletions(d.completions_today ?? []);
+  };
+
+  // 定例に登録した予定は、開始時刻を過ぎた分をサーバ側で自動チェックする。
+  // 送るのは今日の予定だけ。未来の日付はサーバ側でも弾いている。
+  const autoFillRoutines = async (events: Event[], keys: Set<string>) => {
+    const payload = events
+      .filter((e) => e.id && keys.has(seriesKey(e.id)))
+      .map((e) => ({ id: e.id as string, title: e.title, start: e.start }));
+    if (payload.length === 0) return;
+    try {
+      const r = await fetch("/api/completions/auto-fill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ events: payload }),
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      if ((d.count ?? 0) > 0) reloadCompletions();
+    } catch {}
+  };
+
+  const toggleRoutine = async (refId: string, title: string) => {
+    const key = seriesKey(refId);
+    if (!key) return;
+    const on = routineKeys.has(key);
+    setRoutineKeys((s) => {
+      const next = new Set(s);
+      if (on) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    try {
+      if (on) {
+        await fetch(`/api/completions/routines?series_key=${encodeURIComponent(key)}`, {
+          method: "DELETE",
+        });
+      } else {
+        await fetch("/api/completions/routines", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ series_key: key, title }),
+        });
+      }
+    } catch {
+      /* 失敗したら次回の読み込みで直る */
+    }
+  };
+
+  // 予定通りでなかった日を記録する。チェックの有無ではなく「どう違ったか」を残す。
+  const recordException = async (
+    ev: Event,
+    status: "done" | "skipped" | "changed",
+    note: string,
+    actualTime: string,
+  ) => {
+    if (!ev.id) return;
+    const key = completionKey("calendar", ev.id);
+    setPendingKeys((s) => new Set(s).add(key));
+    try {
+      await fetch("/api/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "calendar",
+          ref_id: ev.id,
+          title: ev.title,
+          status,
+          note,
+          actual_time: actualTime,
+        }),
+      });
+      await reloadCompletions();
+      setOpenDetail(null);
+    } finally {
+      setPendingKeys((s) => {
+        const next = new Set(s);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  // 予定そのものの時刻を動かす (Google Calendar 側を書き換える)。長さは保つ。
+  const rescheduleEvent = async (ev: Event, hhmm: string) => {
+    if (!ev.id || !hhmm || ev.all_day) return;
+    const start = new Date(ev.start);
+    const end = new Date(ev.end);
+    if (isNaN(start.getTime())) return;
+    const durationMs = isNaN(end.getTime()) ? 3600000 : end.getTime() - start.getTime();
+    const [h, m] = hhmm.split(":").map(Number);
+    const newStart = new Date(start);
+    newStart.setHours(h, m, 0, 0);
+    const newEnd = new Date(newStart.getTime() + durationMs);
+    try {
+      const r = await fetch(`/api/calendar/event/${encodeURIComponent(ev.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start_iso: newStart.toISOString(), end_iso: newEnd.toISOString() }),
+      });
+      if (r.ok) {
+        setOpenDetail(null);
+        load();
+      }
+    } catch {}
+  };
+
+  const fetchRoutineKeys = async (): Promise<Set<string>> => {
+    try {
+      const r = await fetch("/api/completions/routines");
+      if (!r.ok) return new Set();
+      const d = await r.json();
+      return new Set((d.items ?? []).map((x: RoutineReg) => x.series_key));
+    } catch {
+      return new Set();
+    }
   };
 
   const load = (engineOverride?: string, force = false) => {
@@ -237,9 +514,13 @@ export default function DailyPage() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<DailyBrief>;
       })
-      .then((d) => {
+      .then(async (d) => {
         setData(d);
         syncCompletionsFromData(d);
+        // 定例の登録を読んでから、開始時刻を過ぎた分を自動で済みにする
+        const keys = await fetchRoutineKeys();
+        setRoutineKeys(keys);
+        autoFillRoutines(d.schedule ?? [], keys);
       })
       .catch((er: Error) => setError(er.message))
       .finally(() => setLoading(false));
@@ -1008,6 +1289,9 @@ export default function DailyPage() {
                       const key = ev.id ? completionKey("calendar", ev.id) : "";
                       const done = key ? completedKeys.has(key) : false;
                       const pending = key ? pendingKeys.has(key) : false;
+                      const rec = key ? completionMap.get(key) : undefined;
+                      const isRoutine = ev.id ? routineKeys.has(seriesKey(ev.id)) : false;
+                      const skipped = rec?.status === "skipped";
                       return (
                         <li key={i} className="flex gap-3 items-start">
                           <button
@@ -1032,7 +1316,7 @@ export default function DailyPage() {
                               lineHeight: 1,
                             }}
                           >
-                            {done ? "✓" : ""}
+                            {done ? "✓" : skipped ? "－" : ""}
                           </button>
                           <div
                             className="font-mono text-xs pt-1 shrink-0 px-2.5 py-1 rounded-md"
@@ -1053,7 +1337,16 @@ export default function DailyPage() {
                               >
                                 {ev.title}
                               </span>
-                              {!done && ev.id && (
+                              {isRoutine && (
+                                <span
+                                  className="text-[10px] px-1.5 py-0.5 rounded"
+                                  style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                                  title="定例。開始時刻を過ぎたら自動で済みになる"
+                                >
+                                  定例
+                                </span>
+                              )}
+                              {!done && !skipped && ev.id && (
                                 <span className="flex gap-1">
                                   {[1, 7].map((d) => (
                                     <button
@@ -1068,7 +1361,26 @@ export default function DailyPage() {
                                   ))}
                                 </span>
                               )}
+                              {ev.id && (
+                                <button
+                                  onClick={() => setOpenDetail(openDetail === key ? null : key)}
+                                  title="予定通りでなかったときに記録する"
+                                  className="text-[10px] px-1.5 py-0.5 rounded"
+                                  style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                                >
+                                  ⋯
+                                </button>
+                              )}
                             </div>
+                            {(rec?.actual_time || rec?.note || skipped || rec?.source === "routine-auto") && (
+                              <div className="text-[11px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                                {skipped && "やらなかった"}
+                                {rec?.status === "changed" && "予定から変更"}
+                                {rec?.actual_time && ` 実施 ${rec.actual_time}`}
+                                {rec?.source === "routine-auto" && !rec?.note && " 定例として自動記録"}
+                                {rec?.note && ` — ${rec.note}`}
+                              </div>
+                            )}
                             {ev.location && (
                               <div
                                 className="text-xs mt-0.5"
@@ -1076,6 +1388,18 @@ export default function DailyPage() {
                               >
                                 📍 {ev.location}
                               </div>
+                            )}
+                            {openDetail === key && ev.id && (
+                              <EventDetailPanel
+                                ev={ev}
+                                current={rec}
+                                isRoutine={isRoutine}
+                                busy={pending}
+                                onRecord={(st, note, at) => recordException(ev, st, note, at)}
+                                onReschedule={(hhmm) => rescheduleEvent(ev, hhmm)}
+                                onToggleRoutine={() => ev.id && toggleRoutine(ev.id, ev.title)}
+                                onClose={() => setOpenDetail(null)}
+                              />
                             )}
                           </div>
                         </li>

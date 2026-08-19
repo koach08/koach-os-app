@@ -531,8 +531,13 @@ def daily_brief(
 
     # AI brief は同日中キャッシュ (タブ切替で再生成しない)
     # ※キャッシュ判定の prompt_hash: schedule / backlog の中身が大きく変わったらキャッシュ無効
+    #
+    # prompt の冒頭には現在時刻が分単位で入っている。それをそのまま hash に含めると
+    # 1 分ごとに別キーになり、キャッシュが一度も当たらない (実測: 同じ内容で連続 2 回
+    # 呼んでも毎回 45 秒かけて生成し直していた)。時刻だけ日付に均してから hash する。
     import hashlib as _hl
-    prompt_hash = _hl.md5(prompt.encode("utf-8")).hexdigest()[:8]
+    stable_prompt = prompt.replace(now.strftime("%Y-%m-%d %H:%M (%A)"), now.strftime("%Y-%m-%d"))
+    prompt_hash = _hl.md5(stable_prompt.encode("utf-8")).hexdigest()[:8]
     cache_key_full = f"{cache_key}::{prompt_hash}"
 
     ai_brief = ""

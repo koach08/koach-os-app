@@ -45,16 +45,22 @@ def _fetch_schedules(now) -> tuple[list[dict], list[dict], list[dict]]:
     問い合わせを 3 回繰り返すことになり、それだけで /daily が 20 秒近く待つ。
     8 日ぶんまとめて 1 回引き、こちらで切り分ける。
     """
-    from gcal import list_events_range_multi, detect_event_type
+    from gcal import list_events_range_multi, detect_event_type, covers_day, fold_duplicates
 
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     rows = list_events_range_multi(today, (now + timedelta(days=8)).strftime("%Y-%m-%d"))
+    # 同じ予定が大学アカウントと Gmail の両方に入っていると 2 行 3 行に並ぶ。
+    # id が違うので id では畳めない。中身が同じものを 1 行にしてから切り分ける。
+    rows = fold_duplicates(rows)
 
     def covers(r: dict, day: str) -> bool:
-        s = r.get("start_iso") or ""
-        e = r.get("end_iso") or s
-        return bool(s) and s[:10] <= day <= (e[:10] or s[:10])
+        return covers_day(
+            r.get("start_iso") or "",
+            r.get("end_iso") or r.get("start_iso") or "",
+            r.get("all_day", False),
+            day,
+        )
 
     def shape(r: dict) -> dict:
         return {

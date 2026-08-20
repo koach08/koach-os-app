@@ -154,6 +154,68 @@ def _get_gmail_service(slot: int = 1):
     return build("gmail", "v1", credentials=creds)
 
 
+def fold_duplicates(rows: list[dict]) -> list[dict]:
+    """同じ予定が別カレンダー(別アカウント)に別 id で入っているものを 1 行に畳む。
+
+    大学アカウントと Gmail アカウントの両方に同じ学事予定が入っていると、
+    今日の予定に同じものが 2 度 3 度並ぶ。id が違うので id では畳めない。
+    タイトル・開始・終了・終日フラグが全部一致するものだけを同じ予定とみなす。
+    4 つ全部が一致する別予定は利用者にも見分けがつかないので、畳んで困らない。
+
+    消さずに畳むだけ。畳んだ相手の id は duplicate_ids に残すので、
+    どのカレンダーから来たかは後から追える。
+    """
+    groups: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    for r in rows:
+        # 呼び出し元によって title/summary・start_iso/start とキー名が違う
+        key = (
+            ((r.get("title") or r.get("summary")) or "").strip(),
+            r.get("start_iso") or r.get("start") or "",
+            r.get("end_iso") or r.get("end") or "",
+            bool(r.get("all_day")),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    out: list[dict] = []
+    for key in order:
+        members = groups[key]
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        # 説明文が一番厚いものを残す (空の複製ではなく議題つきを見せる)
+        members = sorted(members, key=lambda r: -len((r.get("description") or "").strip()))
+        keep = dict(members[0])
+        keep["duplicate_ids"] = [m.get("id") for m in members[1:]]
+        keep["duplicate_count"] = len(members)
+        out.append(keep)
+    return out
+
+
+def covers_day(start_iso: str, end_iso: str, all_day: bool, day: str) -> bool:
+    """予定が day (YYYY-MM-DD) に被るか。
+
+    Google の終日予定は end が排他で入る。8/20 だけの予定でも end は 8/21。
+    そのまま「start <= day <= end」で見ると、今日の終日予定が明日にも並ぶ。
+    終日のときだけ end を 1 日戻して判定する。
+    """
+    s = (start_iso or "")[:10]
+    if not s:
+        return False
+    e = (end_iso or start_iso or "")[:10] or s
+    if all_day and e > s:
+        try:
+            e = (datetime.fromisoformat(e) - timedelta(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        if e < s:
+            e = s
+    return s <= day <= e
+
+
 def get_events(days_ahead: int = 0) -> list[dict]:
     """Get events for today (days_ahead=0) or upcoming days.
 
@@ -181,7 +243,7 @@ def get_events(days_ahead: int = 0) -> list[dict]:
         if not s:
             continue
         # その日に被るもの (all-day 含む)
-        if not (s[:10] <= day_str <= (e_[:10] or s[:10])):
+        if not covers_day(s, e_, r.get("all_day", False), day_str):
             continue
         events.append({
             "id": r.get("id", ""),
@@ -193,7 +255,7 @@ def get_events(days_ahead: int = 0) -> list[dict]:
             "all_day": r.get("all_day", False),
         })
     events.sort(key=lambda x: x.get("start", ""))
-    return events
+    return fold_duplicates(events)
 
 
 def get_week_events() -> list[dict]:

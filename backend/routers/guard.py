@@ -164,6 +164,84 @@ def _cross_calendar_conflicts(events: list[dict], max_gap_days: int = 21) -> lis
     return out
 
 
+_ONLINE_MARKERS = (
+    "zoom", "teams", "webex", "meet", "オンライン", "online", "ウェビナー",
+    "webinar", "リモート", "配信", "http",
+)
+
+
+def _is_onsite(location: str) -> bool:
+    """その場所に体を運ぶ必要があるか。Zoom 等が書いてあるだけなら移動は要らない。"""
+    loc = (location or "").strip().lower()
+    if not loc or loc == "none":
+        return False
+    return not any(m in loc for m in _ONLINE_MARKERS)
+
+
+def _overlaps(events: list[dict]) -> list[dict]:
+    """同じ時間帯に 2 つ以上の予定が入っているものを拾う。
+
+    「重なると混乱してテンパる」ので、当日になって気づくのではなく
+    前もって出す。実際 2026-09-03 は外国語教育将来構想 WG (301会議室・対面)
+    と FD 研修 (Zoom) が 16:00-16:15 重なり、その 30 分後に保育園の迎えだった。
+
+    締切は「その時間そこに居る」予定ではないので数えない。締切ブロックを
+    数えると 12:00 の締切と 12:00 の会議が毎回ぶつかったことになる。
+    終日と期間ものも対象外。
+    """
+    timed = [
+        e for e in events
+        if not e.get("all_day") and not _is_multiday_period(e)
+        and len(e.get("start_iso") or "") > 16
+        and e.get("event_type") != "deadline"
+    ]
+
+    def span(e: dict) -> tuple[str, str]:
+        s = e.get("start_iso") or ""
+        return s, (e.get("end_iso") or s)
+
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for i, a in enumerate(timed):
+        sa, ea = span(a)
+        for b in timed[i + 1:]:
+            sb, eb = span(b)
+            if sa[:10] != sb[:10]:
+                continue
+            if not (sa < eb and sb < ea):  # 重なっていない
+                continue
+            # 同じ予定が別カレンダーに入っているだけなら重なりではない
+            if _norm_title(a.get("title", "")) == _norm_title(b.get("title", "")) and sa == sb:
+                continue
+            key = tuple(sorted([f"{_norm_title(a.get('title',''))}@{sa}",
+                                f"{_norm_title(b.get('title',''))}@{sb}"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            first, second = (a, b) if sa <= sb else (b, a)
+            # 両方とも「体を運ぶ」予定なら物理的に無理。Zoom 等は移動が要らない
+            both_onsite = _is_onsite(first.get("location", "")) and _is_onsite(second.get("location", ""))
+            out.append({
+                "date": sa[:10],
+                "id": first.get("id"), "title": first.get("title"),
+                "start_iso": first.get("start_iso"), "end_iso": first.get("end_iso"),
+                "location": first.get("location", ""),
+                "other_id": second.get("id"), "other_title": second.get("title"),
+                "other_start_iso": second.get("start_iso"), "other_end_iso": second.get("end_iso"),
+                "other_location": second.get("location", ""),
+                "both_onsite": both_onsite,
+                "note": (
+                    f"{sa[:10]} {(first.get('start_iso') or '')[11:16]}-{(first.get('end_iso') or '')[11:16]}"
+                    f"「{first.get('title')}」と "
+                    f"{(second.get('start_iso') or '')[11:16]}-{(second.get('end_iso') or '')[11:16]}"
+                    f"「{second.get('title')}」が重なっています"
+                    + ("。どちらも場所が指定されていて移動が要ります" if both_onsite else "")
+                ),
+            })
+    out.sort(key=lambda x: x.get("start_iso", ""))
+    return out
+
+
 @router.get("/guard/scan")
 def scan(days: int = Query(10, ge=1, le=30)):
     now = now_jst()
@@ -174,10 +252,10 @@ def scan(days: int = Query(10, ge=1, le=30)):
     try:
         from gcal import list_events_range, is_configured, IMPORTANT_EVENT_TYPES
         if not is_configured():
-            return {"configured": False, "must_not_miss": [], "date_suspects": [], "reminder_gaps": []}
+            return {"configured": False, "must_not_miss": [], "date_suspects": [], "reminder_gaps": [], "overlaps": []}
         events = list_events_range(today, end)
     except Exception as e:
-        return {"configured": False, "error": str(e), "must_not_miss": [], "date_suspects": [], "reminder_gaps": []}
+        return {"configured": False, "error": str(e), "must_not_miss": [], "date_suspects": [], "reminder_gaps": [], "overlaps": []}
 
     must_not_miss: list[dict] = []
     date_suspects: list[dict] = []
@@ -229,6 +307,9 @@ def scan(days: int = Query(10, ge=1, le=30)):
     # 4. カレンダー間の日付食い違い (日程変更が片方だけ反映されていない)
     date_suspects.extend(_cross_calendar_conflicts(events))
 
+    # 5. 同じ時間帯の重なり (当日になって気づくと詰む)
+    overlaps = _overlaps(events)
+
     must_not_miss.sort(key=lambda x: x.get("start_iso", ""))
     reminder_gaps.sort(key=lambda x: x.get("start_iso", ""))
     date_suspects.sort(key=lambda x: x.get("start_iso", ""))
@@ -238,6 +319,7 @@ def scan(days: int = Query(10, ge=1, le=30)):
         "must_not_miss": must_not_miss,
         "date_suspects": date_suspects,
         "reminder_gaps": reminder_gaps,
+        "overlaps": overlaps,
     }
 
 

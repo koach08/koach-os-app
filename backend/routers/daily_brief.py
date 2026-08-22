@@ -45,16 +45,22 @@ def _fetch_schedules(now) -> tuple[list[dict], list[dict], list[dict]]:
     問い合わせを 3 回繰り返すことになり、それだけで /daily が 20 秒近く待つ。
     8 日ぶんまとめて 1 回引き、こちらで切り分ける。
     """
-    from gcal import list_events_range_multi, detect_event_type
+    from gcal import list_events_range_multi, detect_event_type, covers_day, fold_duplicates
 
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     rows = list_events_range_multi(today, (now + timedelta(days=8)).strftime("%Y-%m-%d"))
+    # 同じ予定が大学アカウントと Gmail の両方に入っていると 2 行 3 行に並ぶ。
+    # id が違うので id では畳めない。中身が同じものを 1 行にしてから切り分ける。
+    rows = fold_duplicates(rows)
 
     def covers(r: dict, day: str) -> bool:
-        s = r.get("start_iso") or ""
-        e = r.get("end_iso") or s
-        return bool(s) and s[:10] <= day <= (e[:10] or s[:10])
+        return covers_day(
+            r.get("start_iso") or "",
+            r.get("end_iso") or r.get("start_iso") or "",
+            r.get("all_day", False),
+            day,
+        )
 
     def shape(r: dict) -> dict:
         return {
@@ -405,14 +411,16 @@ def daily_brief(
         else "(対応待ちメールなし)"
     )
 
-    # 9a2. ノーショー・ガード — 当日必達 + 日付ズレ疑いを最上段で拾う
+    # 9a2. ノーショー・ガード — 当日必達 + 日付ズレ疑い + 予定の重なりを最上段で拾う
     guard_must = []
     guard_suspects = []
+    guard_overlaps = []
     try:
         from routers.guard import scan as _guard_scan
         g = _guard_scan(days=10)
         guard_must = g.get("must_not_miss", [])
         guard_suspects = g.get("date_suspects", [])
+        guard_overlaps = g.get("overlaps", [])
     except Exception:
         pass
     must_miss_text = (
@@ -427,6 +435,11 @@ def daily_brief(
     suspects_text = (
         "\n".join(f"- {s['title']}: {s['note']}" for s in guard_suspects)
         if guard_suspects
+        else "(なし)"
+    )
+    overlaps_text = (
+        "\n".join(f"- {o['note']}" for o in guard_overlaps[:5])
+        if guard_overlaps
         else "(なし)"
     )
 
@@ -505,8 +518,11 @@ def daily_brief(
 ## 今日ぜったい落とせない（会議・締切・入試など時刻付き重要予定・最優先で先頭に）
 {must_miss_text}
 
-## 日付ズレ疑い（タイトルの曜日と実際の曜日が食い違う＝1日ズレの可能性・要確認）
+## 日付ズレ疑い（曜日の食い違い／同じ予定が2つのカレンダーで別の日・要確認）
 {suspects_text}
+
+## 予定の重なり（同じ時間帯に2つ入っている・先に片方を動かす）
+{overlaps_text}
 
 ## 今日の予定
 {schedule_text}
@@ -618,6 +634,7 @@ def daily_brief(
         "energy_hint": energy_hint,
         "must_not_miss": guard_must,
         "date_suspects": guard_suspects,
+        "overlaps": guard_overlaps,
         "ai_brief": ai_brief,
         "engine_used": engine,
         "model_used": resolved_model,

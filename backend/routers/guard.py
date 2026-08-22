@@ -70,6 +70,12 @@ def _norm_title(t: str) -> str:
     return "".join((t or "").split()).replace("\u3000", "")
 
 
+def _strip_paren(t: str) -> str:
+    """括弧書きを落とす。「〜提出期限(修士1年次)」と「〜提出期限」を同じ扱いにする用。"""
+    import re
+    return re.sub(r"[(（][^)）]*[)）]", "", t or "").strip()
+
+
 def _same_series(a: str, b: str) -> bool:
     """同じ会議シリーズとみなせるか。片方がもう片方の先頭に一致すればよい。
 
@@ -139,7 +145,10 @@ def _cross_calendar_conflicts(events: list[dict], max_gap_days: int = 21) -> lis
             # 同じ食い違いは 1 件だけ出す。片方のカレンダーに複製が 2 件あると
             # ペアが 2 通りできて同じ指摘が並ぶので、id ではなく
             # 「短い方のタイトル + 2 つの日付」で畳む。
-            short = min(_norm_title(a.get("title", "")), _norm_title(b.get("title", "")), key=len)
+            # 「〜提出期限」と「〜提出期限(修士1年次)」のように括弧書きだけ違う
+            # 表記ゆれも同じ指摘なので、括弧の中は落としてから比べる。
+            short = _strip_paren(min(_norm_title(a.get("title", "")),
+                                     _norm_title(b.get("title", "")), key=len))
             key = (short, min(da, db), max(da, db))
             if key in seen:
                 continue
@@ -210,8 +219,10 @@ def _overlaps(events: list[dict]) -> list[dict]:
                 continue
             if not (sa < eb and sb < ea):  # 重なっていない
                 continue
-            # 同じ予定が別カレンダーに入っているだけなら重なりではない
-            if _norm_title(a.get("title", "")) == _norm_title(b.get("title", "")) and sa == sb:
+            # 同じ予定が別カレンダーに入っているだけなら重なりではない。
+            # 大学側は「教授会」、Gmail 側は「教授会 研究生受入れ決定」のように
+            # 詳しさが違うので、完全一致では拾えず _same_series で見る。
+            if sa == sb and _same_series(a.get("title", ""), b.get("title", "")):
                 continue
             key = tuple(sorted([f"{_norm_title(a.get('title',''))}@{sa}",
                                 f"{_norm_title(b.get('title',''))}@{sb}"]))
